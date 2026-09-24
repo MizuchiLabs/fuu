@@ -11,9 +11,9 @@ import (
 	"slices"
 
 	"github.com/BurntSushi/toml"
+	"github.com/mizuchilabs/kata/fsutil"
 	"github.com/urfave/cli/v3"
 
-	"github.com/mizuchilabs/fuu/internal/atomicfile"
 	"github.com/mizuchilabs/fuu/internal/sig"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
@@ -142,7 +142,7 @@ func setPinnedSigners(vaultPath string, signers []string) error {
 	if err := toml.NewEncoder(&buf).Encode(pinFile{Signers: sorted}); err != nil {
 		return fmt.Errorf("trust: encode: %w", err)
 	}
-	if err := atomicfile.Write(path, buf.Bytes()); err != nil {
+	if err := fsutil.WriteIfChanged(path, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("trust: %w", err)
 	}
 	return nil

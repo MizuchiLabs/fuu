@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/mizuchilabs/kata/fsutil"
 
-	"github.com/mizuchilabs/fuu/internal/atomicfile"
 	"github.com/mizuchilabs/fuu/internal/seal"
 	"github.com/mizuchilabs/fuu/internal/sig"
 )
@@ -102,7 +102,10 @@ func (f *File) Save(path string) error {
 	if err := toml.NewEncoder(&buf).Encode(f); err != nil {
 		return fmt.Errorf("vault: encode: %w", err)
 	}
-	return atomicfile.Write(path, buf.Bytes())
+	if err := fsutil.WriteIfChanged(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("vault: write %s: %w", path, err)
+	}
+	return nil
 }
 
 // Canonical is the deterministic byte form the signature covers, built by hand so a TOML encoder upgrade cannot silently change what a stored signature means.
