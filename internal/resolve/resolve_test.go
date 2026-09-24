@@ -18,38 +18,38 @@ func write(t *testing.T, path, content string) {
 
 func TestMarkerWinsOverGitRoot(t *testing.T) {
 	root := t.TempDir()
-	repo := filepath.Join(root, "suimon (brew)")
+	repo := filepath.Join(root, "shop (2)")
 	write(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
-	write(t, filepath.Join(repo, ".fuu"), "suimon\n")
+	write(t, filepath.Join(repo, ".fuu"), "shop\n")
 
 	got, err := Project(filepath.Join(repo, "cmd"))
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	if got != "suimon" {
-		t.Fatalf("Project = %q, want %q", got, "suimon")
+	if got != "shop" {
+		t.Fatalf("Project = %q, want %q", got, "shop")
 	}
 }
 
 func TestMarkerInSubdirOverridesParent(t *testing.T) {
 	root := t.TempDir()
-	repo := filepath.Join(root, "nokku")
+	repo := filepath.Join(root, "web")
 	write(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
-	write(t, filepath.Join(repo, ".fuu"), "nokku")
-	write(t, filepath.Join(repo, "protos", ".fuu"), "nokku-protos")
+	write(t, filepath.Join(repo, ".fuu"), "web")
+	write(t, filepath.Join(repo, "packages", "billing", ".fuu"), "billing")
 
-	got, err := Project(filepath.Join(repo, "protos", "v1"))
+	got, err := Project(filepath.Join(repo, "packages", "billing", "internal"))
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	if got != "nokku-protos" {
-		t.Fatalf("Project = %q, want %q", got, "nokku-protos")
+	if got != "billing" {
+		t.Fatalf("Project = %q, want %q", got, "billing")
 	}
 }
 
 func TestGitRootNamesProject(t *testing.T) {
 	root := t.TempDir()
-	repo := filepath.Join(root, "beacon")
+	repo := filepath.Join(root, "worker")
 	write(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main")
 
 	for _, dir := range []string{repo, filepath.Join(repo, "internal", "db")} {
@@ -57,24 +57,24 @@ func TestGitRootNamesProject(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Project(%s): %v", dir, err)
 		}
-		if got != "beacon" {
-			t.Fatalf("Project(%s) = %q, want %q", dir, got, "beacon")
+		if got != "worker" {
+			t.Fatalf("Project(%s) = %q, want %q", dir, got, "worker")
 		}
 	}
 }
 
 func TestNestedSameNameIsNotResolved(t *testing.T) {
 	root := t.TempDir()
-	outer := filepath.Join(root, "protos")
+	outer := filepath.Join(root, "platform")
 	write(t, filepath.Join(outer, ".git", "HEAD"), "ref: refs/heads/main")
-	inner := filepath.Join(outer, "nokku")
+	inner := filepath.Join(outer, "services")
 
 	got, err := Project(inner)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	if got != "protos" {
-		t.Fatalf("Project = %q, want %q, the nested folder must not name the project", got, "protos")
+	if got != "platform" {
+		t.Fatalf("Project = %q, want %q, the nested folder must not name the project", got, "platform")
 	}
 }
 
@@ -100,13 +100,13 @@ func TestEmptyMarkerIsAnError(t *testing.T) {
 func TestMarkerIsFoundFromNestedWorkingDir(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "checkout")
-	write(t, filepath.Join(repo, ".fuu"), "kata")
+	write(t, filepath.Join(repo, ".fuu"), "shop")
 
-	got, err := Project(filepath.Join(repo, "logx", "internal"))
+	got, err := Project(filepath.Join(repo, "packages", "ui", "internal"))
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
-	if got != "kata" {
-		t.Fatalf("Project = %q, want %q", got, "kata")
+	if got != "shop" {
+		t.Fatalf("Project = %q, want %q", got, "shop")
 	}
 }

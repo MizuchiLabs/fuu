@@ -21,16 +21,16 @@ the point.
     fuu init
 
     # store some secrets
-    fuu set nimbus:DATABASE_URL postgres://localhost/mydb
-    fuu set nimbus:API_KEY s3cret
+    fuu set shop:DATABASE_URL postgres://localhost/mydb
+    fuu set shop:API_KEY s3cret
 
     # load them whenever you enter the project
     eval "$(fuu hook bash)"        # .bashrc, or zsh, or fish
 
-Walk into `~/Projects/nimbus` and the two variables appear. Walk out and they
+Walk into `~/Projects/shop` and the two variables appear. Walk out and they
 are gone again. No `.envrc` in the project and nothing to `allow`.
 
-`fuu run nimbus -- npm start` does the same thing for a single command with no
+`fuu run shop -- npm start` does the same thing for a single command with no
 shell integration at all.
 
 ## Shells
@@ -42,7 +42,7 @@ shell integration at all.
 | fish  | `fuu hook fish \| source` |
 
 `fuu env` and `fuu print` detect fish from `FISH_VERSION` and emit `set -gx`
-instead of `export`, so `fuu print nimbus \| source` works by accident too.
+instead of `export`, so `fuu print shop \| source` works by accident too.
 `--shell=posix` or `--shell=fish` forces it.
 
 ## How a directory maps to a project
@@ -55,14 +55,14 @@ fuu looks for a project name in two places, first match wins.
 
 So most repos need no file at all. You only reach for `.fuu` when the checkout
 folder drifts from the project, for example a second checkout like
-`suimon (brew)` that should read the `suimon` project, or a nested folder that
+`shop (2)` that should read the `shop` project, or a nested folder that
 would otherwise be picked up by name.
 
 If neither matches, nothing loads and whatever was loaded before is unloaded.
 
 ## Editing several at once
 
-`fuu edit nimbus` drops the project into `$EDITOR` as plain TOML and writes back
+`fuu edit shop` drops the project into `$EDITOR` as plain TOML and writes back
 only what changed when you save and close.
 
 	API_KEY = "s3cret"
@@ -80,7 +80,7 @@ Values with newlines or quotes round trip exactly, the buffer is TOML so
 escaping is the library's problem rather than yours. To store one from a file,
 pipe it, which also works for values starting with a dash:
 
-	fuu set nimbus:CERT < cert.pem
+	fuu set shop:CERT < cert.pem
 
 ## Devices
 
@@ -125,7 +125,7 @@ its own private git repo and sync across your machines.
     time = 3
     wrap = "..."       # the vault key, sealed to your passphrase
 
-    [secret.nimbus]
+    [secret.shop]
     DATABASE_URL = "..."   # one line per value, sealed under the vault key
 
 Project names and key names are readable. Values are not. Anyone who can read

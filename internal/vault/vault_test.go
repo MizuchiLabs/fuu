@@ -69,10 +69,10 @@ func newFixture(t *testing.T) (f *File, laptop, desktop *softSigner) {
 	if err := f.AddDevice(key, "desktop", other.Public(), desktop.Public()); err != nil {
 		t.Fatalf("AddDevice: %v", err)
 	}
-	if err := f.Set(key, "nimbus", "DATABASE_URL", []byte("postgres://x")); err != nil {
+	if err := f.Set(key, "shop", "DATABASE_URL", []byte("postgres://x")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if err := f.Set(key, "nimbus", "API_KEY", []byte("s3cret")); err != nil {
+	if err := f.Set(key, "shop", "API_KEY", []byte("s3cret")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	return f, laptop, desktop
@@ -124,7 +124,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("VaultKey: %v", err)
 	}
 	defer clear(key)
-	if err := f.Set(key, "nimbus", "DATABASE_URL", []byte("postgres://x")); err != nil {
+	if err := f.Set(key, "shop", "DATABASE_URL", []byte("postgres://x")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	if err := f.Stamp(signer); err != nil {
@@ -146,8 +146,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if _, ok := got.Device["laptop"]; !ok {
 		t.Fatal("device laptop did not survive the TOML round trip")
 	}
-	if _, ok := got.Secret["nimbus"]["DATABASE_URL"]; !ok {
-		t.Fatal("secret nimbus:DATABASE_URL did not survive the TOML round trip")
+	if _, ok := got.Secret["shop"]["DATABASE_URL"]; !ok {
+		t.Fatal("secret shop:DATABASE_URL did not survive the TOML round trip")
 	}
 	if err := got.Verify(); err != nil {
 		t.Fatalf("Verify after reload: %v", err)
@@ -158,7 +158,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("VaultKey after reload: %v", err)
 	}
 	defer clear(reloaded)
-	value, err := got.Get(reloaded, "nimbus", "DATABASE_URL")
+	value, err := got.Get(reloaded, "shop", "DATABASE_URL")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestAddDeviceThenRotate(t *testing.T) {
 	if err := f.AddDevice(old, "desktop", desktop.Public(), newSoftSigner(t).Public()); err != nil {
 		t.Fatalf("AddDevice: %v", err)
 	}
-	if err := f.Set(old, "nimbus", "API_KEY", []byte("s3cret")); err != nil {
+	if err := f.Set(old, "shop", "API_KEY", []byte("s3cret")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	signPub := f.Device["desktop"].SignPub
@@ -230,7 +230,7 @@ func TestAddDeviceThenRotate(t *testing.T) {
 	}
 	defer clear(fresh)
 
-	value, err := f.Get(fresh, "nimbus", "API_KEY")
+	value, err := f.Get(fresh, "shop", "API_KEY")
 	if err != nil {
 		t.Fatalf("Get after rotate: %v", err)
 	}
@@ -301,16 +301,16 @@ func TestUnsetDropsEmptyProject(t *testing.T) {
 	}
 	defer clear(key)
 
-	if err := f.Set(key, "nimbus", "ONLY", []byte("x")); err != nil {
+	if err := f.Set(key, "shop", "ONLY", []byte("x")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if err := f.Unset("nimbus", "ONLY"); err != nil {
+	if err := f.Unset("shop", "ONLY"); err != nil {
 		t.Fatalf("Unset: %v", err)
 	}
-	if _, ok := f.Secret["nimbus"]; ok {
+	if _, ok := f.Secret["shop"]; ok {
 		t.Fatal("Unset left an empty project behind")
 	}
-	if err := f.Unset("nimbus", "ONLY"); err == nil {
+	if err := f.Unset("shop", "ONLY"); err == nil {
 		t.Fatal("Unset accepted a key that is already gone")
 	}
 }
@@ -335,9 +335,9 @@ func TestCanonicalChanges(t *testing.T) {
 			f.Device["desktop"] = d
 		}},
 		{"recovery mem", func(f *File) { f.Recovery.Mem++ }},
-		{"secret value", func(f *File) { f.Secret["nimbus"]["API_KEY"] = "tampered" }},
+		{"secret value", func(f *File) { f.Secret["shop"]["API_KEY"] = "tampered" }},
 		{"secret key name", func(f *File) {
-			keys := f.Secret["nimbus"]
+			keys := f.Secret["shop"]
 			body := keys["API_KEY"]
 			delete(keys, "API_KEY")
 			keys["API_URL"] = body
@@ -404,7 +404,7 @@ func TestVerifyRejectsDeletedSecret(t *testing.T) {
 	f, laptop, _ := newFixture(t)
 	stampAndCheck(t, f, laptop)
 
-	delete(f.Secret["nimbus"], "API_KEY")
+	delete(f.Secret["shop"], "API_KEY")
 
 	if err := f.Verify(); !errors.Is(err, sig.ErrUnverified) {
 		t.Fatalf("Verify = %v, want ErrUnverified", err)
