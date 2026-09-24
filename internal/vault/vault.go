@@ -140,6 +140,14 @@ func Parse(data []byte, path string) (*File, error) {
 	if f.Device == nil {
 		f.Device = map[string]Device{}
 	}
+	// The map key is what lookups match a device by, so it has to be the key
+	// the wrap is sealed to. A renamed slot would leave a device unable to find
+	// its own wrap, so bind the two rather than trust the file to agree.
+	for pub, d := range f.Device {
+		if pub != d.Pub {
+			return nil, fmt.Errorf("vault: %s device %q does not match its key %q", path, pub, d.Pub)
+		}
+	}
 	if f.Secret == nil {
 		f.Secret = map[string]string{}
 	}

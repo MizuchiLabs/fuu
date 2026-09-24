@@ -373,6 +373,24 @@ func TestValidName(t *testing.T) {
 	}
 }
 
+// TestParseDeviceKeyBinding keeps the lookup key bound to the key the wrap is
+// sealed to, so a doctored file cannot rename a device out of its slot.
+func TestParseDeviceKeyBinding(t *testing.T) {
+	matched := []byte(
+		"version = 2\nvaultid = \"v_test\"\n\n[device.\"p256:AAAA\"]\npub = \"p256:AAAA\"\nepub = \"e\"\nwrap = \"w\"\n",
+	)
+	if _, err := Parse(matched, "fuu.toml"); err != nil {
+		t.Fatalf("Parse matching device: %v", err)
+	}
+
+	renamed := []byte(
+		"version = 2\nvaultid = \"v_test\"\n\n[device.\"p256:AAAA\"]\npub = \"p256:BBBB\"\nepub = \"e\"\nwrap = \"w\"\n",
+	)
+	if _, err := Parse(renamed, "fuu.toml"); err == nil {
+		t.Fatal("Parse accepted a device whose map key does not match its key")
+	}
+}
+
 func mustKey(t *testing.T, f *File, dk seal.DeviceKey) []byte {
 	t.Helper()
 	key, err := f.VaultKey(dk)
