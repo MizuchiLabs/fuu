@@ -3,11 +3,6 @@ name: Release
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -15,6 +10,8 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       bump: ${{ steps.version.outputs.bump }}
@@ -59,6 +56,10 @@ jobs:
     needs: tag
     if: needs.tag.outputs.bump == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
