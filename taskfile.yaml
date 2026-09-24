@@ -27,6 +27,18 @@ tasks:
       - go test -coverprofile=coverage.out ./...
       - go tool cover -html=coverage.out
 
+  fuzz:
+    desc: Fuzz the untrusted parsers, {{.FUZZTIME | default "30s"}} each
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    cmds:
+      - |
+        for pkg in $(go list ./...); do
+          for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz'); do
+            go test "$pkg" -run='^$' -fuzz="^${target}$" -fuzztime="{{.FUZZTIME}}"
+          done
+        done
+
   build:
     desc: Build binary
     cmds:
