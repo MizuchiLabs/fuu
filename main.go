@@ -18,7 +18,7 @@ func main() {
 		Suggest:               true,
 		Name:                  "fuu",
 		Version:               buildinfo.String(),
-		Usage:                 "TPM-sealed secrets for .envrc",
+		Usage:                 "TPM-sealed secrets for your shell",
 		DefaultCommand:        "help",
 		Flags:                 []cli.Flag{vaultFlag},
 		Commands:              commands,

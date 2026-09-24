@@ -27,6 +27,11 @@ func absDigest(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Symlinked checkouts are one vault, so hash the resolved path. The
+	// directory resolves even when the vault itself is still being created.
+	if resolved, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		abs = filepath.Join(resolved, filepath.Base(abs))
+	}
 	sum := sha256.Sum256([]byte(abs))
 	return hex.EncodeToString(sum[:]), nil
 }

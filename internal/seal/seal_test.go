@@ -323,3 +323,33 @@ func TestWrapFreshNonce(t *testing.T) {
 		}
 	}
 }
+
+// TestUnwrapPassphraseParamsOutOfRange covers hostile cost parameters, which
+// would panic argon2 or allocate the machine away in a single unwrap.
+func TestUnwrapPassphraseParamsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(w *PassWrap)
+	}{
+		{"huge time", func(w *PassWrap) { w.Time = argon2MaxTime + 1 }},
+		{"too little memory", func(w *PassWrap) { w.Mem = 1 }},
+		{"too much memory", func(w *PassWrap) { w.Mem = argon2MaxMem + 1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, err := WrapPassphrase("correct horse battery staple", testVaultKey())
+			if err != nil {
+				t.Fatalf("WrapPassphrase: %v", err)
+			}
+			tc.set(&w)
+
+			got, err := UnwrapPassphrase("correct horse battery staple", w)
+			if err == nil {
+				t.Fatal("UnwrapPassphrase accepted out of range cost parameters")
+			}
+			if got != nil {
+				t.Fatalf("UnwrapPassphrase returned plaintext %x on bad parameters", got)
+			}
+		})
+	}
+}

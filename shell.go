@@ -23,7 +23,7 @@ import (
 const hookBash = `# fuu, add to .bashrc:  eval "$(fuu hook bash)"
 _fuu_hook() {
 	local previous_exit_status=$?
-	eval "$(command fuu env)"
+	eval "$(command fuu env --shell=posix)"
 	return $previous_exit_status
 }
 if ! [[ "${PROMPT_COMMAND-}" =~ _fuu_hook ]]; then
@@ -53,7 +53,7 @@ _fuu_hook
 
 const hookZsh = `# fuu, add to .zshrc:  eval "$(fuu hook zsh)"
 _fuu_hook() {
-	eval "$(command fuu env)"
+	eval "$(command fuu env --shell=posix)"
 }
 # chpwd and precmd both fire after a cd, the flag keeps that to one run.
 _fuu_chpwd() {
@@ -144,15 +144,12 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	names := slices.Sorted(maps.Keys(values))
 	for _, name := range loaded {
 		if _, ok := values[name]; !ok {
 			out.unset(name)
 		}
 	}
-	for _, name := range names {
-		out.export(name, values[name])
-	}
+	names := emitValues(out, values)
 	out.export("FUU_LOADED", strings.Join(names, " "))
 	out.export("FUU_PROJECT", project)
 	out.export("FUU_STAMP", stamp)
@@ -194,9 +191,7 @@ func cmdPrint(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range slices.Sorted(maps.Keys(values)) {
-		out.export(name, values[name])
-	}
+	emitValues(out, values)
 	return nil
 }
 

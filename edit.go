@@ -180,6 +180,12 @@ func parseValues(raw []byte) (map[string]string, error) {
 		if !vault.ValidName(name) {
 			return nil, fmt.Errorf("%w %q", vault.ErrBadName, name)
 		}
+		if strings.ContainsRune(values[name], 0) {
+			return nil, fmt.Errorf("edit: %q has a NUL byte in its value, the shell would drop it", name)
+		}
+		if shellHazard(name) {
+			fmt.Fprintf(os.Stderr, "edit: %q configures the shell itself, the hook keeps it out of your shell\n", name)
+		}
 	}
 	return values, nil
 }

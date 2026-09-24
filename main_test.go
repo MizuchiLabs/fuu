@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -93,11 +95,11 @@ func writeVault(t *testing.T, path string, withDesktop bool) (laptop, desktop *s
 
 func mustPins(t *testing.T, path string) []string {
 	t.Helper()
-	pins, err := pinnedSigners(path)
+	pins, err := loadPins(path)
 	if err != nil {
-		t.Fatalf("pinnedSigners: %v", err)
+		t.Fatalf("loadPins: %v", err)
 	}
-	return pins
+	return pins.Signers
 }
 
 // TestVerifyPinnedRejectsSelfCertifiedVault is the regression test for the
@@ -276,7 +278,7 @@ func TestTrustVaultAcceptsUnsigned(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := trustVault(path); err != nil {
+	if err := trustVault(path, "open sesame", newSoftKey(t)); err != nil {
 		t.Fatalf("trustVault: %v", err)
 	}
 	registry := registrySigners(f)
@@ -306,7 +308,7 @@ func TestTrustVaultRejectsTampered(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := trustVault(path); !errors.Is(err, sig.ErrUnverified) {
+	if err := trustVault(path, "open sesame", newSoftKey(t)); !errors.Is(err, sig.ErrUnverified) {
 		t.Fatalf("trustVault = %v, want ErrUnverified", err)
 	}
 	if got := mustPins(t, path); len(got) != 0 {
@@ -335,7 +337,7 @@ func TestCheckBless(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkBless(f, tc.pins)
+			err := checkBless(f, pinFile{Signers: tc.pins})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("checkBless(%v) = %v, want error %v", tc.pins, err, tc.wantErr)
 			}
@@ -371,5 +373,175 @@ func TestPresent(t *testing.T) {
 				t.Fatalf("present = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckBlessRefusesRevoked(t *testing.T) {
+	path := isolatePins(t)
+	writeVault(t, path, true)
+	f, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	registry := registrySigners(f)
+	pins := pinFile{Signers: registry, Revoked: registry[:1]}
+	if err := checkBless(f, pins); !errors.Is(err, errRevokedSigner) {
+		t.Fatalf("checkBless = %v, want errRevokedSigner", err)
+	}
+}
+
+// TestRevokedSignerCannotReturnViaReplay is the regression test for the replay
+// attack: a revoked device comes back through a pre-revocation copy of the
+// file, and its signing key then signs again with local approval.
+func TestRevokedSignerCannotReturnViaReplay(t *testing.T) {
+	path := isolatePins(t)
+	laptop, _ := writeVault(t, path, true)
+
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	replay, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	f, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	desktopPub := f.Device["desktop"].SignPub
+	if err := f.RemoveDevice("desktop"); err != nil {
+		t.Fatalf("RemoveDevice: %v", err)
+	}
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("open after revocation: %v", err)
+	}
+	pins, err := loadPins(path)
+	if err != nil {
+		t.Fatalf("loadPins: %v", err)
+	}
+	if !slices.Contains(pins.Revoked, desktopPub) {
+		t.Fatalf("revoked = %v, want it to carry %s", pins.Revoked, desktopPub)
+	}
+
+	if err := os.WriteFile(path, replay, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := openVerified(path); !errors.Is(err, errRevokedSigner) {
+		t.Fatalf("open of the replayed vault = %v, want errRevokedSigner", err)
+	}
+}
+
+func TestTrustVaultForgetsRevoked(t *testing.T) {
+	path := isolatePins(t)
+	laptop, _ := writeVault(t, path, true)
+
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	f, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.RemoveDevice("desktop"); err != nil {
+		t.Fatalf("RemoveDevice: %v", err)
+	}
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("open after revocation: %v", err)
+	}
+
+	if err := trustVault(path, "open sesame", newSoftKey(t)); err != nil {
+		t.Fatalf("trustVault: %v", err)
+	}
+	pins, err := loadPins(path)
+	if err != nil {
+		t.Fatalf("loadPins: %v", err)
+	}
+	if len(pins.Revoked) != 0 {
+		t.Fatalf("revoked = %v after fuu trust, want none", pins.Revoked)
+	}
+}
+
+func TestProveKey(t *testing.T) {
+	dk := newSoftKey(t)
+	f, err := vault.New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := proveKey(f, "open sesame", dk); err != nil {
+		t.Fatalf("proveKey: %v", err)
+	}
+	if err := proveKey(f, "wrong", dk); err == nil {
+		t.Fatal("proveKey accepted the wrong passphrase")
+	}
+	// Not being a device here leaves the recovery wrap as the only proof.
+	if err := proveKey(f, "open sesame", newSoftKey(t)); err != nil {
+		t.Fatalf("proveKey from a stranger: %v", err)
+	}
+}
+
+// TestProveKeyRejectsStitchedWraps covers the bless attack: a replaced vault
+// whose recovery wrap holds one vault key and whose device wrap another. No
+// attacker without the recovery passphrase can build a consistent pair.
+func TestProveKeyRejectsStitchedWraps(t *testing.T) {
+	dk := newSoftKey(t)
+	f, err := vault.New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	stitch, err := seal.WrapPassphrase("open sesame", bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatalf("WrapPassphrase: %v", err)
+	}
+	f.Recovery = vault.Recovery{
+		KDF:  stitch.KDF,
+		Salt: stitch.Salt,
+		Mem:  stitch.Mem,
+		Time: stitch.Time,
+		Wrap: stitch.Body,
+	}
+
+	if err := proveKey(f, "open sesame", dk); err == nil {
+		t.Fatal("proveKey accepted stitched wraps")
+	}
+}
+
+func TestParseValuesGuards(t *testing.T) {
+	if _, err := parseValues([]byte(`X = "a\u0000b"` + "\n")); err == nil {
+		t.Fatal("parseValues accepted a NUL byte")
+	}
+	values, err := parseValues([]byte("PROMPT_COMMAND = \"x\"\n"))
+	if err != nil {
+		t.Fatalf("parseValues: %v", err)
+	}
+	if _, ok := values["PROMPT_COMMAND"]; !ok {
+		t.Fatal("a hazard name is storable, only the hook keeps it out of the shell")
+	}
+}
+
+func TestCheckPassphrase(t *testing.T) {
+	if err := checkPassphrase("short"); err == nil {
+		t.Fatal("checkPassphrase accepted 5 characters")
+	}
+	if err := checkPassphrase("            "); err == nil {
+		t.Fatal("checkPassphrase accepted whitespace only")
+	}
+	if err := checkPassphrase("12 chars long"); err != nil {
+		t.Fatalf("checkPassphrase: %v", err)
 	}
 }

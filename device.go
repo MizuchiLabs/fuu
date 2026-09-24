@@ -65,6 +65,9 @@ func cmdInit(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := checkPassphrase(pass); err != nil {
+		return err
+	}
 
 	dk, err := devkey.Open()
 	if err != nil {

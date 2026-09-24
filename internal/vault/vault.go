@@ -38,8 +38,10 @@ const (
 var (
 	ErrNoDevice   = errors.New("no such device")
 	ErrDupDevice  = errors.New("public key already enrolled")
-	ErrLastDevice = errors.New("cannot revoke the last device, enrol another one first")
+	ErrDupName    = errors.New("device name already taken")
+	ErrLastDevice = errors.New("cannot revoke the last device, enroll another one first")
 	ErrBadName    = errors.New("key is not a valid environment variable name")
+	ErrEmptyPass  = errors.New("recovery passphrase is empty")
 	ErrNoProject  = errors.New("no such project")
 	ErrNoKey      = errors.New("no such key")
 	ErrNoSig      = errors.New("no signature over the vault contents")
@@ -234,6 +236,14 @@ func (f *File) VaultKey(dk seal.DeviceKey) ([]byte, error) {
 
 // VaultKeyPass unseals the vault key with the recovery passphrase.
 func (f *File) VaultKeyPass(passphrase string) ([]byte, error) {
+	// An empty passphrase is not a secret. A vault from before the length
+	// floor would otherwise let anyone join with a bare newline.
+	if passphrase == "" {
+		return nil, fmt.Errorf(
+			"%w, a vault from before the length floor needs fuu rotate from an enrolled machine",
+			ErrEmptyPass,
+		)
+	}
 	r := f.Recovery
 	return seal.UnwrapPassphrase(passphrase, seal.PassWrap{
 		KDF:  r.KDF,
@@ -247,9 +257,14 @@ func (f *File) VaultKeyPass(passphrase string) ([]byte, error) {
 // AddDevice seals key to pub and records the device as name with signing key
 // signPub. Only this block changes, no secret value is touched.
 func (f *File) AddDevice(key []byte, name string, pub *ecdh.PublicKey, signPub *ecdsa.PublicKey) error {
+	// A taken name is never overwritten, that would revoke whatever device
+	// held it without a word.
+	if _, ok := f.Device[name]; ok {
+		return fmt.Errorf("%w %q, pick another name or revoke it first", ErrDupName, name)
+	}
 	want := Pub(pub)
 	for other, d := range f.Device {
-		if other != name && d.Pub == want {
+		if d.Pub == want {
 			return fmt.Errorf("%w %s, already enrolled as %q", ErrDupDevice, want, other)
 		}
 	}

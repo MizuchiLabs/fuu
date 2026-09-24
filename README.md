@@ -33,7 +33,7 @@ the point.
     fuu set shop:API_KEY s3cret
 
     # load them whenever you enter the project
-    eval "$(fuu hook bash)"        # .bashrc, or .zshrc, or fish
+    eval "$(fuu hook bash)"        # put into .bashrc, .zshrc or config.fish
 
 Walk into `~/Projects/shop` and the two variables appear. Walk out and they
 are gone again. No `.envrc` in the project and nothing to `allow`.
@@ -48,6 +48,18 @@ shell integration at all.
 | bash  | `eval "$(fuu hook bash)"` |
 | zsh   | `eval "$(fuu hook zsh)"`  |
 | fish  | `fuu hook fish \| source` |
+
+With initialization guards:
+
+```bash
+command -v fuu >/dev/null 2>&1 && eval "$(fuu hook bash)" # .bashrc
+command -v fuu >/dev/null 2>&1 && eval "$(fuu hook zsh)" # .zshrc
+
+# ~/.config/fish/config.fish
+if type -q fuu
+    fuu hook fish | source
+end
+```
 
 `fuu env` and `fuu print` detect fish from `FISH_VERSION` and emit `set -gx`
 instead of `export`, so `fuu print shop \| source` works by accident too.
@@ -70,8 +82,8 @@ If neither matches, nothing loads and whatever was loaded before is unloaded.
 
 ## Editing several at once
 
-`fuu edit shop` drops the project into `$EDITOR` as plain TOML and writes back
-only what changed when you save and close.
+`fuu edit shop` (or just `fuu edit` inside a repo) drops the project into
+`$EDITOR` as plain TOML and writes back only what changed when you save and close.
 
     API_KEY = "s3cret"
     DATABASE_URL = "postgres://localhost/mydb"
@@ -86,9 +98,11 @@ state of its own, vim registers in viminfo or a central undo directory, keeps
 a copy outside that directory. Disable that per editor if it matters to you.
 
 Nothing is written if the TOML is invalid or if a key name is not a valid
-shell variable name. Clearing the buffer is allowed, but only after a
-confirmation, since an empty buffer is more often a botched edit than an
-intention.
+shell variable name. A name that would take over the shell rather than hold a
+secret, `PROMPT_COMMAND`, `PATH` and about fifty others, can be stored but the
+hook keeps it out of your session. Clearing the buffer is allowed, but only
+after a confirmation, since an empty buffer is more often a botched edit than
+an intention.
 
 Values with newlines or quotes round trip exactly, the buffer is TOML so
 escaping is the library's problem rather than yours. To store one from a file,
@@ -106,19 +120,26 @@ A device is one machine's TPM. Each holds its own unexportable key, and the
 vault key is sealed to every enrolled device plus your recovery passphrase.
 
     fuu device ls          # what is enrolled and when
-    fuu device pub         # this machine's public keys, for enrolment elsewhere
+    fuu device pub         # this machine's public keys, for enrollment elsewhere
     fuu device add <name> <pub>
     fuu device rm <name>   # revoke from here on
     fuu whoami             # which entry is this machine
 
-`fuu join` enrols the machine you are sitting at using the recovery passphrase,
-so a new laptop needs no trip to an old one. Paste nothing.
+`fuu join` enrolls the machine you are sitting at using the recovery passphrase,
+so a new laptop needs no trip to an old one. Paste nothing. New passphrases
+need at least 12 characters.
 
 Revoking the last device is refused. With no signer left the vault can never be
-verified again.
+verified again. A taken name is never reused silently either, `fuu device add`
+refuses one that exists.
 
 `fuu device rm` is not retroactive. A device that already unsealed the vault key
 keeps what it read. Run `fuu rotate` when a machine actually burned.
+
+Revocation sticks. The revoked device's signing key is remembered on every
+machine that sees the revocation and no copy of the vault brings it back, old
+copies included. Only `fuu trust` forgets, or enrolling that machine again
+from here.
 
 ## The vault file
 
@@ -149,66 +170,15 @@ its own private git repo and sync across your machines.
 Project names and key names are readable. Values are not. Anyone who can read
 the file learns which projects you have and what the variables are called.
 
-## How the crypto works
-
-One 32 byte vault key does everything, and it is never stored in the clear.
-
-- **Per device.** The vault key is sealed to a device with an ECIES wrap over
-  P-256. A fresh ephemeral key per wrap, HKDF-SHA256 over the shared secret with
-  both public points bound into the salt, then XChaCha20-Poly1305. Only the
-  target chip can open it.
-- **Recovery.** The same vault key sealed to your passphrase through argon2id.
-  The cost parameters are stored alongside so a future version can still read
-  it. This is also what lets a new machine enrol itself.
-- **Values.** XChaCha20-Poly1305 under the vault key with a fresh random 24 byte
-  nonce per write.
-
-The device key is a deterministic ECC P-256 ECDH primary key derived from the
-TPM owner seed, a fixed salt and a fixed template. Nothing is written to disk,
-reopening the chip reproduces the same key, and the private half never exists
-outside the silicon. `fuu rotate` generates a fresh vault key and rewraps
-everything.
-
-## What it protects, and what it does not
-
-**Protects.** Anyone who reads the file without an enrolled chip or your
-passphrase gets nothing but names. An outsider who edits the file cannot
-introduce anything that passes verification, including weakening the argon2id
-parameters to make your passphrase crackable offline, and including keeping
-your device entry while adding a signing key of their own. That is what the
-signature plus local pinning are really for.
-
-The signature is checked against signing keys pinned on this machine, in your
-config dir outside the vault file, never against keys read out of the file
-being checked. First contact pins the enrolled signing keys, trust on first
-use like ssh known_hosts. After that a vault signed by anything else is
-rejected. A signature from a pinned key brings the pins along with the device
-registry it vouched for, so a device enrolled from an enrolled machine becomes
-trusted here and a revoked one stops verifying on the next pull. If you
-deliberately replace the vault at the same path, `fuu trust` pins the new
-signers. A replacement with no signature gets pinned with a warning, then
-`fuu sign` stamps it when this machine is one of its devices.
-
-**Does not protect.** First contact. A vault that is already malicious before
-your machine ever sees it becomes the baseline that gets pinned, so take the
-first clone of a vault repo from a source you trust. Rolling the file back
-stays unprotected too. An older correctly signed vault is still correctly
-signed, so someone with write access to your git remote can revert it and
-resurrect a revoked device with the secrets as of that commit. `fuu rotate`
-when you revoke, that changes the vault key and leaves the old wraps
-worthless against anything new.
-
-**Cannot protect.** Making a machine forget what it already read. If a device is
-compromised while enrolled it has your secrets, so revoke and then rotate the
-underlying credentials at their issuers. `fuu rotate` alone is not enough after
-a leak, it only guards what comes next.
+How the crypto works and what it does and does not protect live in
+SECURITY.md, the truth for anything crypto related.
 
 ## Commands
 
 | command                       | what it does                                        |
 | ----------------------------- | --------------------------------------------------- |
-| `fuu init`                    | create a vault and enrol this machine               |
-| `fuu join`                    | enrol this machine with the recovery passphrase     |
+| `fuu init`                    | create a vault and enroll this machine              |
+| `fuu join`                    | enroll this machine with the recovery passphrase    |
 | `fuu doctor`                  | TPM status and which device this machine is         |
 | `fuu whoami`                  | the name of this device                             |
 | `fuu set proj:KEY [value]`    | store a secret, reads stdin or prompts when omitted |

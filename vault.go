@@ -33,6 +33,9 @@ func cmdRotate(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := checkPassphrase(pass); err != nil {
+		return err
+	}
 	if err := f.Rotate(key, pass); err != nil {
 		return err
 	}
@@ -57,7 +60,7 @@ func cmdSign(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	pins, err := pinnedSigners(path)
+	pins, err := loadPins(path)
 	if err != nil {
 		return err
 	}
@@ -74,11 +77,30 @@ func cmdSign(_ context.Context, cmd *cli.Command) error {
 	if err := checkBless(f, pins); err != nil {
 		return err
 	}
-	if len(pins) > 0 {
+	if len(pins.Signers) > 0 {
 		fmt.Fprintln(
 			os.Stderr,
 			"sign: stamping a vault with no signature; if you did not just replace it, stop and check where this file came from",
 		)
+		ok, err := confirm("stamp this unsigned vault")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("sign: aborted, nothing written")
+		}
+		pass, err := prompt("recovery passphrase", false)
+		if err != nil {
+			return err
+		}
+		dk, err := devkey.Open()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = dk.Close() }()
+		if err := proveKey(f, pass, dk); err != nil {
+			return err
+		}
 	}
 	if err := signAndSave(f, path); err != nil {
 		return err
@@ -94,11 +116,14 @@ func cmdVerify(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	pins, err := pinnedSigners(cmd.String("vault"))
+	pins, err := loadPins(cmd.String("vault"))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pinned %d signer(s) for this vault\n", len(pins))
+	fmt.Printf("pinned %d signer(s) for this vault\n", len(pins.Signers))
+	if len(pins.Revoked) > 0 {
+		fmt.Printf("revoked %d signing key(s) here\n", len(pins.Revoked))
+	}
 
 	for _, name := range slices.Sorted(maps.Keys(f.Device)) {
 		if f.Device[name].SignPub == f.Signer {
@@ -166,9 +191,6 @@ func signAndSave(f *vault.File, path string) error {
 
 	// The saved registry was just signed by a key this machine controls, so
 	// the pins follow it and devices enrolled or revoked elsewhere take
-	// effect here on the next pull.
-	if registry := registrySigners(f); len(registry) > 0 {
-		return setPinnedSigners(path, registry)
-	}
-	return nil
+	// effect here on the next pull. Revoked keys stay revoked.
+	return adoptRegistry(path, registrySigners(f))
 }

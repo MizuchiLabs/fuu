@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -41,6 +42,17 @@ func confirm(label string) (bool, error) {
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes", nil
+}
+
+// checkPassphrase is the floor for new recovery passphrases. An offline attack
+// on the recovery wrap meets argon2id and then only this.
+func checkPassphrase(p string) error {
+	if utf8.RuneCountInString(strings.TrimSpace(p)) < 12 {
+		return errors.New(
+			"passphrase: at least 12 characters, it is the only thing slowing an offline attack on the recovery wrap",
+		)
+	}
+	return nil
 }
 
 // readSecret hides the input on a terminal and takes a plain line when stdin

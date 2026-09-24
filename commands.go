@@ -40,7 +40,7 @@ var commands = []*cli.Command{
 	},
 	{
 		Name:   "join",
-		Usage:  "enrol this machine using the recovery passphrase",
+		Usage:  "enroll this machine using the recovery passphrase",
 		Action: cmdJoin,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"},
@@ -62,7 +62,7 @@ var commands = []*cli.Command{
 			},
 			{
 				Name:   "pub",
-				Usage:  "print this machine's public key for enrolment elsewhere",
+				Usage:  "print this machine's public key for enrollment elsewhere",
 				Action: cmdDevicePub,
 			},
 			{

@@ -500,3 +500,45 @@ func TestProjectRejectsBadKeyName(t *testing.T) {
 		t.Fatalf("Project = %v, want ErrBadName", err)
 	}
 }
+
+func TestAddDeviceRefusesTaken(t *testing.T) {
+	laptop := newSoftKey(t)
+	f, err := New(laptop, "laptop", "open sesame", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	key, err := f.VaultKey(laptop)
+	if err != nil {
+		t.Fatalf("VaultKey: %v", err)
+	}
+	defer clear(key)
+
+	// A taken name is never overwritten, that silently revokes its holder.
+	err = f.AddDevice(key, "laptop", newSoftKey(t).Public(), newSoftSigner(t).Public())
+	if !errors.Is(err, ErrDupName) {
+		t.Fatalf("AddDevice with a taken name = %v, want ErrDupName", err)
+	}
+	if len(f.Device) != 1 {
+		t.Fatalf("a refused AddDevice changed the registry, %d devices", len(f.Device))
+	}
+
+	other := newSoftKey(t)
+	if err := f.AddDevice(key, "desktop", other.Public(), newSoftSigner(t).Public()); err != nil {
+		t.Fatalf("AddDevice: %v", err)
+	}
+	err = f.AddDevice(key, "again", other.Public(), newSoftSigner(t).Public())
+	if !errors.Is(err, ErrDupDevice) {
+		t.Fatalf("AddDevice with a taken key = %v, want ErrDupDevice", err)
+	}
+}
+
+func TestVaultKeyPassRefusesEmpty(t *testing.T) {
+	dk := newSoftKey(t)
+	f, err := New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := f.VaultKeyPass(""); !errors.Is(err, ErrEmptyPass) {
+		t.Fatalf("VaultKeyPass with an empty passphrase = %v, want ErrEmptyPass", err)
+	}
+}

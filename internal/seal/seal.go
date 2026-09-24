@@ -31,6 +31,13 @@ const (
 	argon2Time = 3          // argon2id passes over memory
 	argon2Mem  = 65536      // argon2id memory in KiB
 	argon2Salt = 16         // random salt bytes
+
+	// Stored cost parameters are bounded at unwrap because a vault can be
+	// hostile from birth, and argon2 panics below 8 times the thread count or
+	// allocates whatever the file asks for.
+	argon2MinMem  = 8
+	argon2MaxMem  = 1 << 20 // 1 GiB in KiB
+	argon2MaxTime = 16
 )
 
 // DeviceKey is the ECDH P-256 exchange UnwrapKey needs from a device key.
@@ -152,9 +159,11 @@ func UnwrapPassphrase(passphrase string, w PassWrap) ([]byte, error) {
 	if w.KDF != argon2KDF {
 		return nil, fmt.Errorf("unsupported kdf %q", w.KDF)
 	}
-	// argon2 panics on a zero round count, a corrupt vault must return an error.
-	if w.Time == 0 {
-		return nil, errors.New("argon2 time is zero")
+	if w.Time == 0 || w.Time > argon2MaxTime {
+		return nil, fmt.Errorf("argon2 time %d is outside 1 to %d", w.Time, argon2MaxTime)
+	}
+	if w.Mem < argon2MinMem || w.Mem > argon2MaxMem {
+		return nil, fmt.Errorf("argon2 memory %d KiB is outside %d to %d", w.Mem, argon2MinMem, argon2MaxMem)
 	}
 	salt, err := base64.RawURLEncoding.DecodeString(w.Salt)
 	if err != nil {
