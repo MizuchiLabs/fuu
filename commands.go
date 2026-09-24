@@ -151,4 +151,9 @@ var commands = []*cli.Command{
 		Usage:  "check the vault signature and print the signing device",
 		Action: cmdVerify,
 	},
+	{
+		Name:   "trust",
+		Usage:  "pin the vault's current signers here, after knowingly replacing the vault",
+		Action: cmdTrust,
+	},
 }

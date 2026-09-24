@@ -18,7 +18,6 @@ import (
 	"maps"
 	"math/big"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/mizuchilabs/fuu/internal/atomicfile"
 	"github.com/mizuchilabs/fuu/internal/seal"
 	"github.com/mizuchilabs/fuu/internal/sig"
 )
@@ -36,15 +36,15 @@ const (
 )
 
 var (
-	ErrNoDevice   = errors.New("vault: no such device")
-	ErrDupDevice  = errors.New("vault: public key already enrolled")
-	ErrLastDevice = errors.New("vault: cannot revoke the last device, enrol another one first")
-	ErrBadName    = errors.New("vault: key is not a valid environment variable name")
-	ErrNoProject  = errors.New("vault: no such project")
-	ErrNoKey      = errors.New("vault: no such key")
-	ErrNoSig      = errors.New("vault: no signature over the vault contents")
-	ErrNoSignPub  = errors.New("vault: device has no signing public key")
-	errBadVersion = errors.New("vault: unsupported version")
+	ErrNoDevice   = errors.New("no such device")
+	ErrDupDevice  = errors.New("public key already enrolled")
+	ErrLastDevice = errors.New("cannot revoke the last device, enrol another one first")
+	ErrBadName    = errors.New("key is not a valid environment variable name")
+	ErrNoProject  = errors.New("no such project")
+	ErrNoKey      = errors.New("no such key")
+	ErrNoSig      = errors.New("no signature over the vault contents")
+	ErrNoSignPub  = errors.New("device has no signing public key")
+	errBadVersion = errors.New("unsupported version")
 
 	// canonEscaper keeps every Canonical field on its own line, so no value can forge a line.
 	canonEscaper = strings.NewReplacer(`\`, `\\`, "\n", `\n`)
@@ -102,7 +102,7 @@ func (f *File) Save(path string) error {
 	if err := toml.NewEncoder(&buf).Encode(f); err != nil {
 		return fmt.Errorf("vault: encode: %w", err)
 	}
-	return writeFile(path, buf.Bytes())
+	return atomicfile.Write(path, buf.Bytes())
 }
 
 // Canonical is the deterministic byte form the signature covers, built by hand so a TOML encoder upgrade cannot silently change what a stored signature means.
@@ -155,26 +155,35 @@ func (f *File) Stamp(sk sig.Signer) error {
 	return nil
 }
 
-// Verify checks the stored signature over Canonical against every enrolled signing key, so an unsigned vault is an error rather than something a deleted signature can turn into.
-func (f *File) Verify() error {
+// Verify checks the stored signature over Canonical against pubs, which must
+// come from outside the file. Trust anchors read out of the vault being
+// verified would let anyone who can write the file mint a self certified one,
+// so callers pin the keys themselves and only pass ones they already trust.
+func (f *File) Verify(pubs []*ecdsa.PublicKey) error {
 	if f.Sig == "" {
 		return ErrNoSig
-	}
-	pubs := make([]*ecdsa.PublicKey, 0, len(f.Device))
-	for name, d := range f.Device {
-		if d.SignPub == "" {
-			return fmt.Errorf("vault: device %q: %w", name, ErrNoSignPub)
-		}
-		pub, err := sig.ParseSigner(d.SignPub)
-		if err != nil {
-			return fmt.Errorf("vault: device %q: %w", name, err)
-		}
-		pubs = append(pubs, pub)
 	}
 	if err := sig.Verify(pubs, f.Canonical(), sig.Envelope{Signer: f.Signer, Sig: f.Sig}); err != nil {
 		return fmt.Errorf("vault: verify: %w", err)
 	}
 	return nil
+}
+
+// SignerPubs parses every enrolled device's signing key, the key set the vault's own registry vouches for. First contact with a vault starts from these.
+func (f *File) SignerPubs() ([]*ecdsa.PublicKey, error) {
+	pubs := make([]*ecdsa.PublicKey, 0, len(f.Device))
+	for _, name := range slices.Sorted(maps.Keys(f.Device)) {
+		d := f.Device[name]
+		if d.SignPub == "" {
+			return nil, fmt.Errorf("%w %q", ErrNoSignPub, name)
+		}
+		pub, err := sig.ParseSigner(d.SignPub)
+		if err != nil {
+			return nil, fmt.Errorf("%w in device %q", err, name)
+		}
+		pubs = append(pubs, pub)
+	}
+	return pubs, nil
 }
 
 // New creates a vault holding a fresh vault key sealed to dk and to passphrase, recording signPub as this device's signing key.
@@ -293,11 +302,11 @@ func (f *File) Rotate(old []byte, passphrase string) error {
 	for name, d := range devices {
 		pub, err := ParsePub(d.Pub)
 		if err != nil {
-			return fmt.Errorf("vault: device %q: %w", name, err)
+			return fmt.Errorf("%w in device %q", err, name)
 		}
 		signPub, err := sig.ParseSigner(d.SignPub)
 		if err != nil {
-			return fmt.Errorf("vault: device %q: %w", name, err)
+			return fmt.Errorf("%w in device %q", err, name)
 		}
 		if err := f.addDevice(key, name, d.Created, pub, signPub); err != nil {
 			return err
@@ -368,11 +377,18 @@ func (f *File) Get(key []byte, project, name string) ([]byte, error) {
 	return seal.UnwrapValue(key, body)
 }
 
-// Project unseals every value in a project as KEY to plaintext.
+// Project unseals every value in a project as KEY to plaintext. Names come
+// from the file, so the eval-safety guard lives here rather than in callers.
 func (f *File) Project(key []byte, project string) (map[string]string, error) {
 	keys, ok := f.Secret[project]
 	if !ok {
 		return nil, fmt.Errorf("%w %q", ErrNoProject, project)
+	}
+
+	for name := range keys {
+		if !ValidName(name) {
+			return nil, fmt.Errorf("%w %q", ErrBadName, name)
+		}
 	}
 
 	out := make(map[string]string, len(keys))
@@ -451,40 +467,4 @@ func newVaultKey() ([]byte, error) {
 		return nil, fmt.Errorf("vault: generate vault key: %w", err)
 	}
 	return key, nil
-}
-
-func writeFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("vault: create %s: %w", dir, err)
-	}
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
-		return nil
-	}
-
-	tmp, err := os.CreateTemp(dir, ".fuu-*.tmp")
-	if err != nil {
-		return fmt.Errorf("vault: create temp file: %w", err)
-	}
-	name := tmp.Name()
-
-	defer func() {
-		_ = os.Remove(name)
-	}()
-
-	if _, err = tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("vault: write temp file: %w", err)
-	}
-	if err = tmp.Close(); err != nil {
-		return fmt.Errorf("vault: close temp file: %w", err)
-	}
-	// CreateTemp already made it 0600, keep that across the rename.
-	if err = os.Chmod(name, 0o600); err != nil {
-		return fmt.Errorf("vault: chmod temp file: %w", err)
-	}
-	if err = os.Rename(name, path); err != nil {
-		return fmt.Errorf("vault: replace %s: %w", path, err)
-	}
-	return nil
 }

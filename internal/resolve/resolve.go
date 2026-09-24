@@ -34,7 +34,7 @@ func fromMarker(dir string) (string, error) {
 		case err == nil:
 			name := strings.TrimSpace(string(data))
 			if name == "" {
-				return "", fmt.Errorf("resolve: %s names no project", path)
+				return "", fmt.Errorf("%s names no project", path)
 			}
 			return name, nil
 		case !errors.Is(err, os.ErrNotExist):

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
@@ -35,8 +36,18 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	if project == "" {
 		return errors.New("edit: no project here, name one")
 	}
+	if !singleLineName(project) {
+		return fmt.Errorf("edit: project name %q cannot go into the edit buffer safely", project)
+	}
 
 	path := cmd.String("vault")
+
+	release, err := lockVault(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
@@ -75,7 +86,7 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := fresh.Verify(); err != nil {
+	if err := verifyPinned(path, fresh); err != nil {
 		return err
 	}
 
@@ -171,4 +182,16 @@ func parseValues(raw []byte) (map[string]string, error) {
 		}
 	}
 	return values, nil
+}
+
+// The name sits in the buffer's comment header, so anything TOML reads as a
+// newline there would let the name carry its own lines past the comment and
+// pre-seed keys into the buffer.
+func singleLineName(name string) bool {
+	for _, r := range name {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return name != ""
 }

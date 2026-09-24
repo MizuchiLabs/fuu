@@ -92,7 +92,7 @@ func createPrimary(r transport.TPM) (*primaryKey, error) {
 func ecdhZGen(r transport.TPM, key *primaryKey, peer *ecdh.PublicKey) ([]byte, error) {
 	// FillBytes panics on a coordinate wider than 32 bytes, so only a P-256 peer may reach it.
 	if peer == nil || peer.Curve() != ecdh.P256() {
-		return nil, errors.New("devkey: peer key is not P-256")
+		return nil, errors.New("peer key is not P-256")
 	}
 	x, y, err := tpm2.ECCPoint(peer)
 	if err != nil {
@@ -117,7 +117,7 @@ func ecdhZGen(r transport.TPM, key *primaryKey, peer *ecdh.PublicKey) ([]byte, e
 		return nil, fmt.Errorf("devkey: decode ecdh point: %w", err)
 	}
 	if len(out.X.Buffer) == 0 || len(out.X.Buffer) > 32 {
-		return nil, fmt.Errorf("devkey: ecdh x coordinate is %d bytes, want 1 to 32", len(out.X.Buffer))
+		return nil, fmt.Errorf("ecdh x coordinate is %d bytes, want 1 to 32", len(out.X.Buffer))
 	}
 	// The TPM may strip leading zero bytes while crypto/ecdh always returns the full width.
 	shared := make([]byte, 32)
@@ -132,7 +132,7 @@ func publicToECDH(pub tpm2.TPM2BPublic) (*ecdh.PublicKey, error) {
 		return nil, fmt.Errorf("devkey: decode public key: %w", err)
 	}
 	if tp.Type != tpm2.TPMAlgECC {
-		return nil, errors.New("devkey: TPM key is not ECC")
+		return nil, errors.New("TPM key is not ECC")
 	}
 	params, err := tp.Parameters.ECCDetail()
 	if err != nil {

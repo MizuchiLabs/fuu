@@ -84,9 +84,20 @@ func stampAndCheck(t *testing.T, f *File, signer *softSigner) {
 	if err := f.Stamp(signer); err != nil {
 		t.Fatalf("Stamp: %v", err)
 	}
-	if err := f.Verify(); err != nil {
+	if err := f.Verify(registryPubs(t, f)); err != nil {
 		t.Fatalf("Verify after Stamp: %v", err)
 	}
+}
+
+// registryPubs stands in for the pinned trust anchors a caller brings from
+// outside the file, pinned to the fixture's own registry.
+func registryPubs(t *testing.T, f *File) []*ecdsa.PublicKey {
+	t.Helper()
+	pubs, err := f.SignerPubs()
+	if err != nil {
+		t.Fatalf("SignerPubs: %v", err)
+	}
+	return pubs
 }
 
 func TestPubRoundTrip(t *testing.T) {
@@ -149,7 +160,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if _, ok := got.Secret["shop"]["DATABASE_URL"]; !ok {
 		t.Fatal("secret shop:DATABASE_URL did not survive the TOML round trip")
 	}
-	if err := got.Verify(); err != nil {
+	if err := got.Verify(registryPubs(t, got)); err != nil {
 		t.Fatalf("Verify after reload: %v", err)
 	}
 
@@ -360,7 +371,7 @@ func TestStampVerifyRoundTrip(t *testing.T) {
 	if err := f.Stamp(laptop); err != nil {
 		t.Fatalf("Stamp: %v", err)
 	}
-	if err := f.Verify(); err != nil {
+	if err := f.Verify(registryPubs(t, f)); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
@@ -373,7 +384,7 @@ func TestVerifyRejectsTamperedDevice(t *testing.T) {
 	d.Wrap = "tampered"
 	f.Device["desktop"] = d
 
-	if err := f.Verify(); !errors.Is(err, sig.ErrUnverified) {
+	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
 		t.Fatalf("Verify = %v, want ErrUnverified", err)
 	}
 }
@@ -393,7 +404,7 @@ func TestVerifyRejectsKDFDowngrade(t *testing.T) {
 			stampAndCheck(t, f, laptop)
 
 			tc.mutate(f)
-			if err := f.Verify(); !errors.Is(err, sig.ErrUnverified) {
+			if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
 				t.Fatalf("Verify = %v, want ErrUnverified", err)
 			}
 		})
@@ -406,7 +417,7 @@ func TestVerifyRejectsDeletedSecret(t *testing.T) {
 
 	delete(f.Secret["shop"], "API_KEY")
 
-	if err := f.Verify(); !errors.Is(err, sig.ErrUnverified) {
+	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
 		t.Fatalf("Verify = %v, want ErrUnverified", err)
 	}
 }
@@ -417,14 +428,14 @@ func TestVerifyRejectsDeletedDevice(t *testing.T) {
 
 	delete(f.Device, "desktop")
 
-	if err := f.Verify(); !errors.Is(err, sig.ErrUnverified) {
+	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
 		t.Fatalf("Verify = %v, want ErrUnverified", err)
 	}
 }
 
 func TestVerifyRejectsEmptySig(t *testing.T) {
 	f, laptop, _ := newFixture(t)
-	if err := f.Verify(); !errors.Is(err, ErrNoSig) {
+	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, ErrNoSig) {
 		t.Fatalf("Verify of an unsigned vault = %v, want ErrNoSig", err)
 	}
 
@@ -432,7 +443,7 @@ func TestVerifyRejectsEmptySig(t *testing.T) {
 		t.Fatalf("Stamp: %v", err)
 	}
 	f.Sig = ""
-	if err := f.Verify(); !errors.Is(err, ErrNoSig) {
+	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, ErrNoSig) {
 		t.Fatalf("Verify with an empty Sig = %v, want ErrNoSig", err)
 	}
 }
@@ -442,7 +453,50 @@ func TestVerifyAcceptsSecondDeviceSigner(t *testing.T) {
 	if err := f.Stamp(desktop); err != nil {
 		t.Fatalf("Stamp: %v", err)
 	}
-	if err := f.Verify(); err != nil {
+	if err := f.Verify(registryPubs(t, f)); err != nil {
 		t.Fatalf("Verify with the second device signing: %v", err)
+	}
+}
+
+// TestVerifyRejectsSelfCertifiedVault covers the rewrite attack: someone with
+// write access to the file keeps the victim registry intact, adds their own
+// signing key and re-signs. The vault is internally consistent, so anchors
+// taken from the registry accept it, anchors pinned before the rewrite do not.
+func TestVerifyRejectsSelfCertifiedVault(t *testing.T) {
+	f, laptop, _ := newFixture(t)
+	stampAndCheck(t, f, laptop)
+	pins := registryPubs(t, f)
+
+	attacker := newSoftSigner(t)
+	signer, err := sig.EncodeSigner(attacker.Public())
+	if err != nil {
+		t.Fatalf("EncodeSigner: %v", err)
+	}
+	f.Device["attacker"] = Device{Created: "2026-09-24", Pub: "p256:AAA", SignPub: signer}
+	if err := f.Stamp(attacker); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+
+	if err := f.Verify(pins); !errors.Is(err, sig.ErrUnknownSigner) {
+		t.Fatalf("Verify against pre-attack pins = %v, want ErrUnknownSigner", err)
+	}
+	// The old self-certifying behaviour, kept as documentation of the gap.
+	if err := f.Verify(registryPubs(t, f)); err != nil {
+		t.Fatalf("Verify against the rewritten registry = %v, want nil", err)
+	}
+}
+
+func TestProjectRejectsBadKeyName(t *testing.T) {
+	f, laptop, _ := newFixture(t)
+	stampAndCheck(t, f, laptop)
+
+	keys := f.Secret["shop"]
+	body := keys["API_KEY"]
+	delete(keys, "API_KEY")
+	keys["EVIL=rm"] = body
+
+	// The name guard runs before anything is unsealed, so a nil key is enough.
+	if _, err := f.Project(nil, "shop"); !errors.Is(err, ErrBadName) {
+		t.Fatalf("Project = %v, want ErrBadName", err)
 	}
 }

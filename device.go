@@ -41,6 +41,11 @@ func cmdDoctor(_ context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Println("vault:", path)
+	if err := verifyPinned(path, f); err != nil {
+		return err
+	}
+	fmt.Println("sig: ok")
+
 	name, err := f.Match(dk)
 	if err != nil {
 		fmt.Println("device: not enrolled here")
@@ -87,12 +92,15 @@ func cmdInit(_ context.Context, cmd *cli.Command) error {
 
 func cmdJoin(_ context.Context, cmd *cli.Command) error {
 	path := cmd.String("vault")
-	f, err := vault.Load(path)
+
+	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
-	// Checked before anything is added, a tampered vault is never re-stamped.
-	if err := f.Verify(); err != nil {
+	defer release()
+
+	f, err := openVerified(path)
+	if err != nil {
 		return err
 	}
 
@@ -148,11 +156,8 @@ func cmdWhoami(_ context.Context, cmd *cli.Command) error {
 }
 
 func cmdDeviceLs(_ context.Context, cmd *cli.Command) error {
-	f, err := vault.Load(cmd.String("vault"))
+	f, err := openVerified(cmd.String("vault"))
 	if err != nil {
-		return err
-	}
-	if err := f.Verify(); err != nil {
 		return err
 	}
 
@@ -213,6 +218,12 @@ func cmdDeviceAdd(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	release, err := lockVault(cmd.String("vault"))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
@@ -238,12 +249,15 @@ func cmdDeviceRm(_ context.Context, cmd *cli.Command) error {
 	}
 
 	path := cmd.String("vault")
-	f, err := vault.Load(path)
+
+	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
-	// Checked before anything is removed, a tampered vault is never re-stamped.
-	if err := f.Verify(); err != nil {
+	defer release()
+
+	f, err := openVerified(path)
+	if err != nil {
 		return err
 	}
 

@@ -59,7 +59,7 @@ type PassWrap struct {
 // WrapKey seals vaultKey to recipient under a fresh ephemeral P-256 keypair.
 func WrapKey(recipient *ecdh.PublicKey, vaultKey []byte) (KeyWrap, error) {
 	if recipient == nil {
-		return KeyWrap{}, errors.New("seal: nil recipient")
+		return KeyWrap{}, errors.New("nil recipient")
 	}
 	eph, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
@@ -95,7 +95,7 @@ func WrapKey(recipient *ecdh.PublicKey, vaultKey []byte) (KeyWrap, error) {
 // UnwrapKey opens a wrap with the device key it was sealed to.
 func UnwrapKey(dk DeviceKey, w KeyWrap) ([]byte, error) {
 	if dk == nil {
-		return nil, errors.New("seal: nil device key")
+		return nil, errors.New("nil device key")
 	}
 	peer, err := parseEPub(w.EPub)
 	if err != nil {
@@ -150,11 +150,11 @@ func WrapPassphrase(passphrase string, vaultKey []byte) (PassWrap, error) {
 // UnwrapPassphrase replays the stored argon2id parameters and opens the body.
 func UnwrapPassphrase(passphrase string, w PassWrap) ([]byte, error) {
 	if w.KDF != argon2KDF {
-		return nil, fmt.Errorf("seal: unsupported kdf %q", w.KDF)
+		return nil, fmt.Errorf("unsupported kdf %q", w.KDF)
 	}
 	// argon2 panics on a zero round count, a corrupt vault must return an error.
 	if w.Time == 0 {
-		return nil, errors.New("seal: argon2 time is zero")
+		return nil, errors.New("argon2 time is zero")
 	}
 	salt, err := base64.RawURLEncoding.DecodeString(w.Salt)
 	if err != nil {
@@ -219,7 +219,7 @@ func parseEPub(s string) (*ecdh.PublicKey, error) {
 	}
 	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), raw)
 	if x == nil {
-		return nil, errors.New("seal: ephemeral public key is not a compressed P-256 point")
+		return nil, errors.New("ephemeral public key is not a compressed P-256 point")
 	}
 
 	// crypto/ecdh only takes uncompressed points.

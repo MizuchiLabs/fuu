@@ -13,11 +13,11 @@ import (
 )
 
 var (
-	ErrNoPubs        = errors.New("sig: no public keys to verify against")
-	ErrBadSigner     = errors.New("sig: malformed signer public key")
-	ErrBadSig        = errors.New("sig: malformed signature")
-	ErrUnverified    = errors.New("sig: signature does not verify over the payload")
-	ErrUnknownSigner = errors.New("sig: signer is not among the accepted public keys")
+	ErrNoPubs        = errors.New("no public keys to verify against")
+	ErrBadSigner     = errors.New("malformed signer public key")
+	ErrBadSig        = errors.New("malformed signature")
+	ErrUnverified    = errors.New("signature does not verify over the payload")
+	ErrUnknownSigner = errors.New("signer is not among the accepted public keys")
 )
 
 // Signer is the signing capability of one device identity.
@@ -37,11 +37,11 @@ type Envelope struct {
 // Sign hashes payload with SHA-256 and returns a detached envelope over the digest.
 func Sign(s Signer, payload []byte) (Envelope, error) {
 	if s == nil {
-		return Envelope{}, errors.New("sig: nil signer")
+		return Envelope{}, errors.New("nil signer")
 	}
 	pub := s.Public()
 	if pub == nil {
-		return Envelope{}, errors.New("sig: nil signer public key")
+		return Envelope{}, errors.New("nil signer public key")
 	}
 	digest := sha256.Sum256(payload)
 	sig, err := s.Sign(digest[:])

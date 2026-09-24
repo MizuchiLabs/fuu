@@ -57,7 +57,7 @@ func (k *SigningKey) Public() *ecdsa.PublicKey {
 // Sign signs a SHA-256 digest and returns the DER encoded ECDSA signature.
 func (k *SigningKey) Sign(digest []byte) ([]byte, error) {
 	if len(digest) != sha256.Size {
-		return nil, fmt.Errorf("devkey: digest is %d bytes, want the %d byte SHA-256 digest", len(digest), sha256.Size)
+		return nil, fmt.Errorf("digest is %d bytes, want the %d byte SHA-256 digest", len(digest), sha256.Size)
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -169,7 +169,7 @@ func publicToECDSA(pub tpm2.TPM2BPublic) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("devkey: decode public key: %w", err)
 	}
 	if tp.Type != tpm2.TPMAlgECC {
-		return nil, errors.New("devkey: TPM key is not ECC")
+		return nil, errors.New("TPM key is not ECC")
 	}
 	point, err := tp.Unique.ECC()
 	if err != nil {
@@ -177,7 +177,7 @@ func publicToECDSA(pub tpm2.TPM2BPublic) (*ecdsa.PublicKey, error) {
 	}
 	// The TPM strips leading zero bytes while SEC 1 wants each coordinate at curve width.
 	if len(point.X.Buffer) > 32 || len(point.Y.Buffer) > 32 {
-		return nil, errors.New("devkey: ECC coordinate longer than 32 bytes")
+		return nil, errors.New("ECC coordinate longer than 32 bytes")
 	}
 	// SEC 1 uncompressed form is 0x04 || X || Y with each coordinate padded to 32 bytes.
 	data := make([]byte, 65)

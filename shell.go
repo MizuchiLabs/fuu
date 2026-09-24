@@ -14,7 +14,6 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/mizuchilabs/fuu/internal/resolve"
-	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
 // The hooks only ever call back into fuu env. Nothing from a repo is executed,
@@ -34,8 +33,20 @@ _fuu_hook
 `
 
 const hookFish = `# fuu, add to config.fish:  fuu hook fish | source
-function _fuu_hook --on-variable PWD --on-event fish_prompt
+function _fuu_hook
 	command fuu env --shell=fish | source
+end
+# PWD and fish_prompt both fire after a cd, the flag keeps that to one run.
+function _fuu_pwd --on-variable PWD
+	_fuu_hook
+	set -g _fuu_ran 1
+end
+function _fuu_prompt --on-event fish_prompt
+	if set -q _fuu_ran
+		set -e _fuu_ran
+		return
+	end
+	_fuu_hook
 end
 _fuu_hook
 `
@@ -44,9 +55,21 @@ const hookZsh = `# fuu, add to .zshrc:  eval "$(fuu hook zsh)"
 _fuu_hook() {
 	eval "$(command fuu env)"
 }
+# chpwd and precmd both fire after a cd, the flag keeps that to one run.
+_fuu_chpwd() {
+	_fuu_hook
+	_fuu_ran=1
+}
+_fuu_precmd() {
+	if [[ -n ${_fuu_ran-} ]]; then
+		unset _fuu_ran
+		return
+	fi
+	_fuu_hook
+}
 autoload -Uz add-zsh-hook
-add-zsh-hook chpwd _fuu_hook
-add-zsh-hook precmd _fuu_hook
+add-zsh-hook chpwd _fuu_chpwd
+add-zsh-hook precmd _fuu_precmd
 _fuu_hook
 `
 
@@ -97,7 +120,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	}
 
 	loaded := strings.Fields(os.Getenv("FUU_LOADED"))
-	f, err := vault.Load(path)
+	f, err := openVerified(path)
 	if errors.Is(err, os.ErrNotExist) {
 		out.unload(loaded)
 		return nil
@@ -108,9 +131,6 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	if project == "" || f.Secret[project] == nil {
 		out.unload(loaded)
 		return nil
-	}
-	if err := f.Verify(); err != nil {
-		return err
 	}
 
 	dk, key, err := openKey(f)
@@ -125,11 +145,6 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 	names := slices.Sorted(maps.Keys(values))
-	for _, name := range names {
-		if !vault.ValidName(name) {
-			return fmt.Errorf("%w %q", vault.ErrBadName, name)
-		}
-	}
 	for _, name := range loaded {
 		if _, ok := values[name]; !ok {
 			out.unset(name)
@@ -180,9 +195,6 @@ func cmdPrint(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 	for _, name := range slices.Sorted(maps.Keys(values)) {
-		if !vault.ValidName(name) {
-			return fmt.Errorf("%w %q", vault.ErrBadName, name)
-		}
 		out.export(name, values[name])
 	}
 	return nil

@@ -34,7 +34,18 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 		} else if value, err = prompt("value", false); err != nil {
 			return err
 		}
+	} else {
+		fmt.Fprintln(
+			os.Stderr,
+			"set: a value on the command line stays in the process list and shell history, pipe it or leave it out to be prompted",
+		)
 	}
+
+	release, err := lockVault(cmd.String("vault"))
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	f, dk, key, err := unlock(cmd)
 	if err != nil {
@@ -56,12 +67,15 @@ func cmdUnset(_ context.Context, cmd *cli.Command) error {
 	}
 
 	path := cmd.String("vault")
-	f, err := vault.Load(path)
+
+	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
-	// Checked before anything is removed, a tampered vault is never re-stamped.
-	if err := f.Verify(); err != nil {
+	defer release()
+
+	f, err := openVerified(path)
+	if err != nil {
 		return err
 	}
 	if err := f.Unset(project, name); err != nil {
