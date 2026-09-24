@@ -13,9 +13,13 @@ import (
 )
 
 // shellHazards are variable names that reach past a plain secret once the hook
-// evals the export line: they run code or take the shell over. The list is the
-// price of eval integration. A key named like one of these stays in the vault,
-// readable through fuu get, and never reaches the shell or a child process.
+// evals the export line: they run code or take the shell over. Matching is
+// case insensitive because zsh and fish tie a lower case alias to the real
+// thing (path to PATH, fpath to FPATH, prompt to PS1), so a secret named path
+// would hijack command resolution in zsh even though bash treats it as a plain
+// variable. The list is the price of eval integration. A key named like one of
+// these stays in the vault, readable through fuu get, and never reaches the
+// shell or a child process.
 var shellHazards = map[string]struct{}{
 	"BASHOPTS":              {},
 	"BASH_COMPAT":           {},
@@ -25,6 +29,9 @@ var shellHazards = map[string]struct{}{
 	"CLASSPATH":             {},
 	"EDITOR":                {},
 	"ENV":                   {},
+	"FISH_COMPLETE_PATH":    {},
+	"FISH_FUNCTION_PATH":    {},
+	"FISH_USER_PATHS":       {},
 	"FISH_VERSION":          {},
 	"FPATH":                 {},
 	"GCONV_PATH":            {},
@@ -40,12 +47,16 @@ var shellHazards = map[string]struct{}{
 	"HOME":                  {},
 	"IFS":                   {},
 	"JAVA_TOOL_OPTIONS":     {},
+	"MANPATH":               {},
+	"MODULE_PATH":           {},
 	"NODE_OPTIONS":          {},
 	"NODE_PATH":             {},
 	"PATH":                  {},
 	"PERL5LIB":              {},
 	"PERL5OPT":              {},
+	"PROMPT":                {},
 	"PROMPT_COMMAND":        {},
+	"PROMPT_SUBST":          {},
 	"PS0":                   {},
 	"PS1":                   {},
 	"PS2":                   {},
@@ -55,6 +66,8 @@ var shellHazards = map[string]struct{}{
 	"PYTHONINSPECT":         {},
 	"PYTHONPATH":            {},
 	"PYTHONSTARTUP":         {},
+	"RPROMPT":               {},
+	"RPS1":                  {},
 	"RUBYLIB":               {},
 	"RUBYOPT":               {},
 	"SHELLOPTS":             {},
@@ -71,11 +84,12 @@ var shellHazards = map[string]struct{}{
 var shellHazardPrefix = []string{"DYLD_", "FUU_", "LD_"}
 
 func shellHazard(name string) bool {
-	if _, ok := shellHazards[name]; ok {
+	upper := strings.ToUpper(name)
+	if _, ok := shellHazards[upper]; ok {
 		return true
 	}
 	return slices.ContainsFunc(shellHazardPrefix, func(p string) bool {
-		return strings.HasPrefix(name, p)
+		return strings.HasPrefix(upper, p)
 	})
 }
 

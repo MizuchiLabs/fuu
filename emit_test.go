@@ -156,7 +156,12 @@ func TestShellHazard(t *testing.T) {
 		"PROMPT_COMMAND", "PATH", "PS1", "IFS", "BASH_ENV", "EDITOR", "VISUAL",
 		"HOME", "TMPDIR", "XDG_CONFIG_HOME", "FISH_VERSION", "GIT_SSH_COMMAND",
 		"LD_PRELOAD", "LD_CUSTOM", "DYLD_INSERT_LIBRARIES", "FUU_STAMP", "FUU_LOADED",
-		"NODE_OPTIONS",
+		"NODE_OPTIONS", "MODULE_PATH", "FISH_FUNCTION_PATH", "FISH_USER_PATHS",
+		"PROMPT", "RPROMPT",
+		// zsh and fish tie a lower case alias to the real thing, so the match
+		// has to survive the case a secret was actually named in.
+		"path", "fpath", "cdpath", "ld_preload", "Ld_Preload", "fuu_stamp",
+		"prompt", "fish_function_path", "Editor",
 	}
 	for _, name := range hazards {
 		if !shellHazard(name) {
@@ -164,7 +169,17 @@ func TestShellHazard(t *testing.T) {
 		}
 	}
 
-	plain := []string{"API_KEY", "DATABASE_URL", "PYTHON_SDK_TOKEN", "MY_PATH", "PATHS", "LD", "FUU"}
+	plain := []string{
+		"API_KEY",
+		"DATABASE_URL",
+		"PYTHON_SDK_TOKEN",
+		"MY_PATH",
+		"PATHS",
+		"LD",
+		"FUU",
+		"MYPATH",
+		"fpath2",
+	}
 	for _, name := range plain {
 		if shellHazard(name) {
 			t.Errorf("shellHazard(%q) = true, want false", name)
