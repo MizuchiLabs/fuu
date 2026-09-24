@@ -12,6 +12,14 @@ import (
 	"math/big"
 )
 
+var (
+	ErrNoPubs        = errors.New("sig: no public keys to verify against")
+	ErrBadSigner     = errors.New("sig: malformed signer public key")
+	ErrBadSig        = errors.New("sig: malformed signature")
+	ErrUnverified    = errors.New("sig: signature does not verify over the payload")
+	ErrUnknownSigner = errors.New("sig: signer is not among the accepted public keys")
+)
+
 // Signer is the signing capability of one device identity.
 // internal/devkey.SigningKey satisfies it. This is a required test seam,
 // its second implementation lives in this package's tests.
@@ -25,14 +33,6 @@ type Envelope struct {
 	Signer string // base64.RawURLEncoding of the compressed P-256 signer public key
 	Sig    string // base64.RawURLEncoding of the DER encoded ECDSA signature
 }
-
-var (
-	ErrNoPubs        = errors.New("sig: no public keys to verify against")
-	ErrBadSigner     = errors.New("sig: malformed signer public key")
-	ErrBadSig        = errors.New("sig: malformed signature")
-	ErrUnverified    = errors.New("sig: signature does not verify over the payload")
-	ErrUnknownSigner = errors.New("sig: signer is not among the accepted public keys")
-)
 
 // Sign hashes payload with SHA-256 and returns a detached envelope over the digest.
 func Sign(s Signer, payload []byte) (Envelope, error) {
