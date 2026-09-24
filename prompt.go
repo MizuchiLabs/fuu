@@ -11,6 +11,11 @@ import (
 	"golang.org/x/term"
 )
 
+const (
+	minPassLen      = 20
+	minPassDistinct = 6
+)
+
 func prompt(label string, repeat bool) (string, error) {
 	first, err := readSecret(label)
 	if err != nil {
@@ -47,9 +52,22 @@ func confirm(label string) (bool, error) {
 // checkPassphrase is the floor for new recovery passphrases. An offline attack
 // on the recovery wrap meets argon2id and then only this.
 func checkPassphrase(p string) error {
-	if utf8.RuneCountInString(strings.TrimSpace(p)) < 12 {
-		return errors.New(
-			"passphrase: at least 12 characters, it is the only thing slowing an offline attack on the recovery wrap",
+	trimmed := strings.TrimSpace(p)
+	if utf8.RuneCountInString(trimmed) < minPassLen {
+		return fmt.Errorf(
+			"passphrase: at least %d characters, generate one with a password manager or diceware. It is the only thing slowing an offline attack on the recovery wrap",
+			minPassLen,
+		)
+	}
+
+	distinct := make(map[rune]struct{}, len(trimmed))
+	for _, r := range trimmed {
+		distinct[r] = struct{}{}
+	}
+	if len(distinct) < minPassDistinct {
+		return fmt.Errorf(
+			"passphrase: at least %d different characters, a run of one thing is the cheap answer to a length rule",
+			minPassDistinct,
 		)
 	}
 	return nil

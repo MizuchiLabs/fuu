@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,78 @@ func captureOutput(t *testing.T, f func()) string {
 	return string(out)
 }
 
+// unquoteSh reads back a string shQuote produced: single quoted segments
+// joined by an escaped quote, the grammar POSIX shells parse.
+func unquoteSh(t *testing.T, q string) string {
+	t.Helper()
+	var b strings.Builder
+	for q != "" {
+		rest, ok := strings.CutPrefix(q, "'")
+		if !ok {
+			t.Fatalf("shQuote output %q does not open with a quote", q)
+		}
+		end := strings.IndexByte(rest, '\'')
+		if end < 0 {
+			t.Fatalf("shQuote output %q has an unterminated quote", q)
+		}
+		b.WriteString(rest[:end])
+		q = rest[end+1:]
+		if q == "" {
+			break
+		}
+		escaped, ok := strings.CutPrefix(q, `\'`)
+		if !ok {
+			t.Fatalf("shQuote output %q has text outside quotes", q)
+		}
+		b.WriteByte('\'')
+		q = escaped
+	}
+	return b.String()
+}
+
+// unquoteFish reads back a string fishQuote produced: one single quoted run
+// where backslash escapes only the backslash and the quote itself.
+func unquoteFish(t *testing.T, q string) string {
+	t.Helper()
+	if len(q) < 2 || q[0] != '\'' || q[len(q)-1] != '\'' {
+		t.Fatalf("fishQuote output %q is not single quoted", q)
+	}
+	body := q[1 : len(q)-1]
+	var b strings.Builder
+	for i := 0; i < len(body); {
+		switch body[i] {
+		case '\'':
+			t.Fatalf("fishQuote output %q has an unescaped quote", q)
+		case '\\':
+			if i+1 == len(body) {
+				t.Fatalf("fishQuote output %q ends mid escape", q)
+			}
+			if body[i+1] != '\\' && body[i+1] != '\'' {
+				t.Fatalf("fishQuote output %q escapes nothing else in fish", q)
+			}
+			b.WriteByte(body[i+1])
+			i += 2
+		default:
+			b.WriteByte(body[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
+// quoteCases are the shapes quoting has to survive: quotes, newlines,
+// backslashes and shell metacharacters.
+var quoteCases = []string{
+	"plain",
+	"it's",
+	"line\nbreak",
+	`back\slash`,
+	`both ' and \ plus` + "\n" + `a break`,
+	`'\''`,
+	`$(rm -rf /) "d" $var`,
+	"",
+}
+
 func TestShQuote(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"plain", "'plain'"},
@@ -46,17 +119,34 @@ func TestShQuote(t *testing.T) {
 	}
 }
 
+func TestShQuoteRoundTrip(t *testing.T) {
+	for _, in := range quoteCases {
+		if got := unquoteSh(t, shQuote(in)); got != in {
+			t.Errorf("posix round trip of %q = %q", in, got)
+		}
+	}
+}
+
 func TestFishQuote(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"plain", "'plain'"},
 		{"it's", `'it\'s'`},
 		{`back\slash`, `'back\\slash'`},
 		{"$(rm -rf /)", "'$(rm -rf /)'"},
+		{"line\nbreak", "'line\nbreak'"},
 		{"", "''"},
 	}
 	for _, tc := range cases {
 		if got := fishQuote(tc.in); got != tc.want {
 			t.Errorf("fishQuote(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFishQuoteRoundTrip(t *testing.T) {
+	for _, in := range quoteCases {
+		if got := unquoteFish(t, fishQuote(in)); got != in {
+			t.Errorf("fish round trip of %q = %q", in, got)
 		}
 	}
 }
@@ -82,28 +172,39 @@ func TestShellHazard(t *testing.T) {
 	}
 }
 
-// TestEmitValues covers the eval boundary end to end: quoted exports for real
-// secrets, a comment per hazard name, and nothing exported for either beyond
-// that. A hazard name from the vault must never reach the shell, and the
-// hook's own FUU_ state exports are not vault names so they stay exportable.
-func TestEmitValues(t *testing.T) {
+// TestHazardsFiltered is the guarantee that both exits from the vault filter
+// the same way: what the hook evals and what fuu run hands to a child. A vault
+// key named PATH, LD_PRELOAD, DYLD_INSERT_LIBRARIES or PROMPT_COMMAND must
+// reach neither, only its comment and a skipped pair, while a plain key with a
+// quote in its value survives both quoted correctly.
+func TestHazardsFiltered(t *testing.T) {
 	values := map[string]string{
-		"API_KEY":        "it's",
-		"PROMPT_COMMAND": "evil",
-		"FUU_LOADED":     "poison",
+		"API_KEY":               "it's",
+		"DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib",
+		"FUU_LOADED":            "poison",
+		"LD_PRELOAD":            "/tmp/evil.so",
+		"PATH":                  "/tmp/evil",
+		"PROMPT_COMMAND":        "evil",
 	}
 
-	got := captureOutput(t, func() { emitValues(emitter{}, values) })
+	var names []string
+	got := captureOutput(t, func() { names = emitValues(emitter{}, values) })
 	want := "export API_KEY='it'\\''s'\n" +
+		"# fuu kept DYLD_INSERT_LIBRARIES out of your shell, it configures the shell itself\n" +
 		"# fuu kept FUU_LOADED out of your shell, it configures the shell itself\n" +
+		"# fuu kept LD_PRELOAD out of your shell, it configures the shell itself\n" +
+		"# fuu kept PATH out of your shell, it configures the shell itself\n" +
 		"# fuu kept PROMPT_COMMAND out of your shell, it configures the shell itself\n"
 	if got != want {
-		t.Fatalf("emitValues = %q, want %q", got, want)
+		t.Errorf("emitValues = %q, want %q", got, want)
+	}
+	if len(names) != 1 || names[0] != "API_KEY" {
+		t.Errorf("emitValues names = %v, want just API_KEY", names)
 	}
 
-	names := emitValues(emitter{}, map[string]string{"API_KEY": "x", "PATH": "evil"})
-	if len(names) != 1 || names[0] != "API_KEY" {
-		t.Fatalf("emitValues names = %v, want just API_KEY", names)
+	pairs := envPairs(values)
+	if len(pairs) != 1 || pairs[0] != "API_KEY=it's" {
+		t.Errorf("envPairs = %v, want just API_KEY=it's", pairs)
 	}
 }
 
@@ -122,6 +223,11 @@ func TestEmitterExportGolden(t *testing.T) {
 	if got := captureOutput(t, func() { posix.export("EVIL=1; rm", "x") }); got != "" {
 		t.Errorf("bad name export = %q, want silence", got)
 	}
+
+	// The hook's own FUU_ state is not a vault name, so it exports directly.
+	if got := captureOutput(t, func() { posix.export("FUU_STAMP", "abc") }); got != "export FUU_STAMP='abc'\n" {
+		t.Errorf("state export = %q", got)
+	}
 }
 
 func TestEmitterUnset(t *testing.T) {
@@ -136,5 +242,40 @@ func TestEmitterUnset(t *testing.T) {
 	}
 	if got := captureOutput(t, func() { posix.unset("EVIL; rm") }); got != "" {
 		t.Errorf("bad name unset = %q, want silence", got)
+	}
+}
+
+// TestUnload pins what the hook sources when there is no vault to load: every
+// name the shell still holds, then the hook's own state, and no output at all
+// for a shell that never loaded anything.
+func TestUnload(t *testing.T) {
+	posix := emitter{}
+	fish := emitter{fish: true}
+
+	t.Setenv("FUU_STAMP", "abc123")
+	got := captureOutput(t, func() { posix.unload([]string{"API_KEY", "TOKEN"}) })
+	want := "unset API_KEY\nunset TOKEN\nunset FUU_LOADED FUU_STAMP\n"
+	if got != want {
+		t.Errorf("posix unload = %q, want %q", got, want)
+	}
+
+	t.Setenv("FUU_STAMP", "abc123")
+	got = captureOutput(t, func() { fish.unload([]string{"API_KEY"}) })
+	want = "set -e API_KEY\nset -e FUU_LOADED FUU_STAMP\n"
+	if got != want {
+		t.Errorf("fish unload = %q, want %q", got, want)
+	}
+
+	t.Setenv("FUU_STAMP", "")
+	got = captureOutput(t, func() { posix.unload(nil) })
+	if got != "" {
+		t.Errorf("empty unload = %q, want silence", got)
+	}
+
+	t.Setenv("FUU_STAMP", "abc123")
+	got = captureOutput(t, func() { posix.unload(nil) })
+	want = "unset FUU_LOADED FUU_STAMP\n"
+	if got != want {
+		t.Errorf("state only unload = %q, want %q", got, want)
 	}
 }

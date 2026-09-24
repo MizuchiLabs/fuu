@@ -12,8 +12,6 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v3"
-
-	"github.com/mizuchilabs/fuu/internal/resolve"
 )
 
 // The hooks only ever call back into fuu env. Nothing from a repo is executed,
@@ -89,48 +87,49 @@ func cmdHook(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// cmdEnv emits the shell lines that move the environment onto the project that
-// applies to the working directory, and off the one that applied before.
+// cmdEnv emits the shell lines that load this directory's vault into the
+// shell, and drops what the shell holds when there is no vault here or it
+// cannot be trusted.
 func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	out, err := emitterFor(cmd)
 	if err != nil {
 		return err
 	}
+	loaded := strings.Fields(os.Getenv("FUU_LOADED"))
 
-	project := cmd.Args().Get(0)
-	if project == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("env: %w", err)
-		}
-		if project, err = resolve.Project(wd); err != nil {
-			return err
-		}
+	path, err := vaultPath(cmd)
+	if errors.Is(err, errNoVault) {
+		out.unload(loaded)
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 
-	path := cmd.String("vault")
 	stamp, err := vaultStamp(path)
 	if err != nil {
 		return err
 	}
 	// The hook runs this before every prompt, so say nothing while the shell
 	// already holds exactly this state and nothing needs unsealing.
-	if os.Getenv("FUU_STAMP") == stamp && os.Getenv("FUU_PROJECT") == project {
+	if stamp == os.Getenv("FUU_STAMP") && len(loaded) > 0 {
 		return nil
 	}
 
-	loaded := strings.Fields(os.Getenv("FUU_LOADED"))
 	f, err := openVerified(path)
-	if errors.Is(err, os.ErrNotExist) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		out.unload(loaded)
 		return nil
-	}
-	if err != nil {
+	case errors.Is(err, errUnaccepted), errors.Is(err, errUntrusted),
+		errors.Is(err, errStale), errors.Is(err, errRevoked):
+		// The hook runs at every prompt, so a refusal is a message and a
+		// clean shell rather than a failed eval.
+		fmt.Fprintf(os.Stderr, "fuu: %v\n", err)
+		out.unload(loaded)
+		return nil
+	case err != nil:
 		return err
-	}
-	if project == "" || f.Secret[project] == nil {
-		out.unload(loaded)
-		return nil
 	}
 
 	dk, key, err := openKey(f)
@@ -140,7 +139,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	values, err := f.Project(key, project)
+	values, err := f.Values(key)
 	if err != nil {
 		return err
 	}
@@ -151,7 +150,6 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	}
 	names := emitValues(out, values)
 	out.export("FUU_LOADED", strings.Join(names, " "))
-	out.export("FUU_PROJECT", project)
 	out.export("FUU_STAMP", stamp)
 	return nil
 }
@@ -175,11 +173,6 @@ func cmdPrint(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	project := cmd.Args().Get(0)
-	if project == "" {
-		return errors.New("print: want <project>")
-	}
-
 	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
@@ -187,7 +180,7 @@ func cmdPrint(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	values, err := f.Project(key, project)
+	values, err := f.Values(key)
 	if err != nil {
 		return err
 	}
@@ -197,16 +190,12 @@ func cmdPrint(_ context.Context, cmd *cli.Command) error {
 
 func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
-	if len(args) < 2 {
-		return errors.New("run: want <project> <command> [args...]")
-	}
-	project, rest := args[0], args[1:]
 	// SkipFlagParsing hands -- straight through, but humans read it as a separator.
-	if rest[0] == "--" {
-		rest = rest[1:]
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
 	}
-	if len(rest) == 0 {
-		return errors.New("run: want <project> <command> [args...]")
+	if len(args) == 0 {
+		return errors.New("run: want <command> [args...]")
 	}
 
 	f, dk, key, err := unlock(cmd)
@@ -216,13 +205,13 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	values, err := f.Project(key, project)
+	values, err := f.Values(key)
 	if err != nil {
 		return err
 	}
 
 	//nolint:gosec // G204 is the whole purpose of run, it executes the caller's own command.
-	child := exec.CommandContext(ctx, rest[0], rest[1:]...)
+	child := exec.CommandContext(ctx, args[0], args[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
@@ -230,9 +219,14 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	return child.Run()
 }
 
+// envPairs builds the child environment with the same hazard filter the hook
+// applies, so a vault key named PATH or LD_PRELOAD reaches no process either.
 func envPairs(values map[string]string) []string {
 	out := make([]string, 0, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if shellHazard(name) {
+			continue
+		}
 		out = append(out, name+"="+values[name])
 	}
 	return out

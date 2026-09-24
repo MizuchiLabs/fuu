@@ -2,65 +2,71 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 
 	"github.com/BurntSushi/toml"
 	"github.com/mizuchilabs/kata/fsutil"
-	"github.com/urfave/cli/v3"
 
-	"github.com/mizuchilabs/fuu/internal/devkey"
 	"github.com/mizuchilabs/fuu/internal/seal"
 	"github.com/mizuchilabs/fuu/internal/sig"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// Pins live outside the vault file because trust anchors read out of the file
-// being verified let anyone with write access mint a self certified vault.
-// First contact pins the registry, trust on first use. Every later check
-// accepts only pinned keys, and the pin set then follows the registry a
-// pinned signature just vouched for, so enrolled devices gain trust and
-// revoked ones lose it.
+// pinFile is this machine's record of one vault: which signing keys it
+// accepts, how far the write counter has advanced, and the folders it may
+// load from. It lives outside the vault on purpose. Trust anchors read out of
+// the file being verified would let anyone who can write the file mint a self
+// certified one.
 //
-// Revocation is sticky here. A signing key that leaves the registry lands in
-// Revoked and no replayed file can bring it back, because a vault carrying a
-// revoked key is refused before anything is verified. Only fuu trust clears
-// the list, or a registry this machine signed adding the key back.
+// There is no revocation list. The write counter is what stops a revoked
+// device coming back on an old copy of the file, which keeps revoking and
+// re-enrolling a device free of side effects.
 type pinFile struct {
-	Signers []string `toml:"signers"`
-	Revoked []string `toml:"revoked,omitempty"`
+	Signers    []string `toml:"signers"`
+	LastSeq    uint64   `toml:"lastseq"`
+	LastDigest string   `toml:"lastdigest"`
+	Paths      []string `toml:"paths,omitempty"`
 }
 
-var errRevokedSigner = errors.New("signing key is revoked on this machine")
+var (
+	errUnaccepted = errors.New("this vault has not been accepted on this machine")
+	errUntrusted  = errors.New("this folder is not one this machine loads that vault from")
+	errStale      = errors.New("this vault is older than what this machine has already seen")
+	errRevoked    = errors.New("signing key is not accepted on this machine")
+)
 
-// openVerified loads the vault and checks it against this machine's pins.
-func openVerified(path string) (*vault.File, error) {
-	f, err := vault.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := verifyPinned(path, f); err != nil {
-		return nil, err
-	}
-	return f, nil
-}
-
+// verifyPinned checks the file against what this machine already accepted:
+// a signature from a key it trusts, at a folder it loads from, and a write
+// counter that has not gone backwards.
 func verifyPinned(path string, f *vault.File) error {
-	pins, err := loadPins(path)
+	pins, err := loadPins(f.VaultID)
 	if err != nil {
 		return err
 	}
 	if len(pins.Signers) == 0 {
-		return pinFirstContact(path, f)
+		return fmt.Errorf(
+			"%w, if this is really yours run fuu trust here",
+			errUnaccepted,
+		)
 	}
-	if err := refuseRevoked(f, pins); err != nil {
+
+	dir, err := vaultDir(path)
+	if err != nil {
 		return err
+	}
+	if !slices.Contains(pins.Paths, dir) {
+		return fmt.Errorf(
+			"%w, if you meant to use %s run fuu trust here",
+			errUntrusted,
+			dir,
+		)
 	}
 
 	pubs := make([]*ecdsa.PublicKey, 0, len(pins.Signers))
@@ -73,84 +79,92 @@ func verifyPinned(path string, f *vault.File) error {
 	}
 	if err := f.Verify(pubs); err != nil {
 		if errors.Is(err, sig.ErrUnknownSigner) || errors.Is(err, vault.ErrNoSig) {
-			return trustHint(err)
+			return fmt.Errorf(
+				"%w, if you knowingly changed it run fuu trust here",
+				errRevoked,
+			)
 		}
 		return err
 	}
 
-	registry := registrySigners(f)
-	if slices.Equal(pins.Signers, registry) {
-		return nil
-	}
-	return adoptRegistry(path, registry)
-}
-
-// refuseRevoked blocks any vault carrying a device whose signing key was
-// revoked on this machine. Without it a replayed file re-adds the burned
-// device and its key signs again with local approval.
-func refuseRevoked(f *vault.File, pins pinFile) error {
-	for _, name := range slices.Sorted(maps.Keys(f.Device)) {
-		if slices.Contains(pins.Revoked, f.Device[name].SignPub) {
-			return fmt.Errorf(
-				"%w, device %q still carries it. If that is really what you want run fuu trust",
-				errRevokedSigner,
-				name,
-			)
-		}
+	// A copy of the file this machine has already accepted is always fine.
+	// Anything else has to be a step forward, which is what makes a rolled
+	// back or forked copy refuse to load instead of quietly winning.
+	if f.Digest() != pins.LastDigest && f.Seq <= pins.LastSeq {
+		return fmt.Errorf(
+			"%w, this copy is at write %d and this machine is at %d. If that is what you want run fuu trust here",
+			errStale,
+			f.Seq,
+			pins.LastSeq,
+		)
 	}
 	return nil
 }
 
-// pinFirstContact accepts a vault that is consistent with its own registry and
-// pins that registry, the one moment self certification cannot be avoided.
-// What gets pinned goes to stderr, so the eval'd hook keeps saying nothing but
-// shell lines.
-func pinFirstContact(path string, f *vault.File) error {
-	pubs, err := f.SignerPubs()
+// trustVault records the vault as accepted here: its signing keys, how far the
+// write counter has got, and the folder to load it from. This is the one step
+// that introduces a signing key nobody here has vouched for yet, so it is the
+// only command that replaces the accepted set rather than following it.
+func trustVault(path string, f *vault.File, key []byte) error {
+	signers, err := f.Signers(key)
 	if err != nil {
 		return err
 	}
-	if err := f.Verify(pubs); err != nil {
-		if errors.Is(err, vault.ErrNoSig) {
-			return trustHint(err)
-		}
+	dir, err := vaultDir(path)
+	if err != nil {
 		return err
 	}
-	registry := registrySigners(f)
-	if err := refuseRevoked(f, pinFile{Signers: registry}); err != nil {
+	// The signing keys are replaced, that is what accepting means. The folders
+	// accumulate, so accepting a second checkout must not untrust the first.
+	pins, err := loadPins(f.VaultID)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(
-		os.Stderr,
-		"trust: first contact with %s, pinning %d signer(s), check them before trusting this file\n",
-		path,
-		len(registry),
-	)
-	for _, signer := range registry {
-		fmt.Fprintln(os.Stderr, " ", signer)
-	}
-	return adoptRegistry(path, registry)
+	return savePins(f.VaultID, pinFile{
+		Signers:    signers,
+		LastSeq:    f.Seq,
+		LastDigest: f.Digest(),
+		Paths:      addPath(pins.Paths, dir),
+	})
 }
 
-func trustHint(err error) error {
-	return fmt.Errorf(
-		"%w\nif you knowingly replaced the vault run fuu trust, otherwise this file is not what it claims to be",
-		err,
-	)
-}
-
-func registrySigners(f *vault.File) []string {
-	out := make([]string, 0, len(f.Device))
-	for _, d := range f.Device {
-		out = append(out, d.SignPub)
+// proveKey proves the wraps agree on one vault key before trust is granted:
+// the recovery passphrase opens the recovery wrap and the device wrap opens to
+// the same key. A wrap set swapped in by an attacker satisfies neither, so a
+// device wrap that does not open is a refusal rather than a pass. A nil
+// device key means this machine is not enrolled and only the recovery wrap
+// can be proven, which is the join path.
+func proveKey(f *vault.File, passphrase string, dk seal.DeviceKey) error {
+	viaPass, err := f.VaultKeyPass(passphrase)
+	if err != nil {
+		return fmt.Errorf("the recovery wrap does not open with that passphrase: %w", err)
 	}
-	slices.Sort(out)
-	return out
+	defer clear(viaPass)
+
+	if dk == nil {
+		return nil
+	}
+
+	viaDevice, err := f.VaultKey(dk)
+	if err != nil {
+		return fmt.Errorf(
+			"this machine's wrap does not open in this file, it was swapped or dropped: %w",
+			err,
+		)
+	}
+	defer clear(viaDevice)
+
+	if !bytes.Equal(viaPass, viaDevice) {
+		return errors.New(
+			"the recovery wrap and the device wrap hold different vault keys, this file is stitched together",
+		)
+	}
+	return nil
 }
 
 // loadPins reads this vault's pin file, empty when there is none.
-func loadPins(vaultPath string) (pinFile, error) {
-	path, err := pinPath(vaultPath)
+func loadPins(vaultID string) (pinFile, error) {
+	path, err := pinPath(vaultID)
 	if err != nil {
 		return pinFile{}, err
 	}
@@ -171,7 +185,7 @@ func loadPins(vaultPath string) (pinFile, error) {
 
 // savePins writes the pin file sorted, so an unchanged write stays byte
 // identical and WriteIfChanged leaves it alone.
-func savePins(vaultPath string, pins pinFile) error {
+func savePins(vaultID string, pins pinFile) error {
 	if len(pins.Signers) == 0 {
 		return errors.New("trust: refusing to pin a vault with no signers")
 	}
@@ -179,15 +193,20 @@ func savePins(vaultPath string, pins pinFile) error {
 		return errors.New("trust: refusing to pin an empty signer")
 	}
 
-	path, err := pinPath(vaultPath)
+	path, err := pinPath(vaultID)
 	if err != nil {
 		return err
 	}
 	signers := slices.Clone(pins.Signers)
 	slices.Sort(signers)
-	revoked := slices.Clone(pins.Revoked)
-	slices.Sort(revoked)
-	out := pinFile{Signers: signers, Revoked: slices.Compact(revoked)}
+	paths := slices.Clone(pins.Paths)
+	slices.Sort(paths)
+	out := pinFile{
+		Signers:    slices.Compact(signers),
+		LastSeq:    pins.LastSeq,
+		LastDigest: pins.LastDigest,
+		Paths:      slices.Compact(paths),
+	}
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(out); err != nil {
@@ -199,149 +218,44 @@ func savePins(vaultPath string, pins pinFile) error {
 	return nil
 }
 
-// adoptRegistry records the registry a pinned signature just vouched for.
-// Signers that leave the registry become revoked and stay revoked. One that
-// comes back in a registry this machine signed is enrolling again on purpose,
-// which only the device commands reach, so the list gives way there.
-func adoptRegistry(vaultPath string, registry []string) error {
-	pins, err := loadPins(vaultPath)
-	if err != nil {
-		return err
+// pinPath names this vault's pin file. It is keyed on the vault identity, so
+// two copies of one vault share one record while two vaults never do. The
+// identity is hashed so a hostile vault cannot name its way into another
+// vault's file.
+func pinPath(vaultID string) (string, error) {
+	if vaultID == "" {
+		return "", errors.New("trust: empty vault identity")
 	}
-
-	revoked := make([]string, 0, len(pins.Revoked)+len(pins.Signers))
-	for _, signer := range pins.Revoked {
-		if !slices.Contains(registry, signer) {
-			revoked = append(revoked, signer)
-		}
-	}
-	for _, gone := range pins.Signers {
-		if !slices.Contains(registry, gone) && !slices.Contains(revoked, gone) {
-			revoked = append(revoked, gone)
-		}
-	}
-
-	pins.Signers = registry
-	pins.Revoked = revoked
-	return savePins(vaultPath, pins)
-}
-
-// proveKey proves the wraps agree on one vault key before trust is granted:
-// the recovery passphrase opens the recovery wrap and the device wrap opens to
-// the same key. A wrap set swapped in by an attacker satisfies neither without
-// the passphrase.
-func proveKey(f *vault.File, passphrase string, dk seal.DeviceKey) error {
-	viaPass, err := f.VaultKeyPass(passphrase)
-	if err != nil {
-		return fmt.Errorf("the recovery wrap does not open with that passphrase: %w", err)
-	}
-	defer clear(viaPass)
-
-	viaDevice, err := f.VaultKey(dk)
-	if errors.Is(err, vault.ErrNoDevice) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("the device wrap does not open here: %w", err)
-	}
-	defer clear(viaDevice)
-
-	if !bytes.Equal(viaPass, viaDevice) {
-		return errors.New(
-			"the recovery wrap and the device wrap hold different vault keys, this file is stitched together",
-		)
-	}
-	return nil
-}
-
-// pinPath names this vault's pin file. The vault path is normalized here, so callers pass it as given.
-func pinPath(vaultPath string) (string, error) {
-	digest, err := absDigest(vaultPath)
-	if err != nil {
-		return "", fmt.Errorf("trust: %w", err)
-	}
+	sum := sha256Hex([]byte(vaultID))
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("trust: %w", err)
 	}
-	return filepath.Join(dir, "fuu", "pins", digest+".toml"), nil
+	return filepath.Join(dir, "fuu", "pins", sum+".toml"), nil
 }
 
-// cmdTrust re-pins the vault's current registry after checking the vault is
-// consistent with it, for when a vault was knowingly replaced.
-func cmdTrust(_ context.Context, cmd *cli.Command) error {
-	path := cmd.String("vault")
-	if _, err := vault.Load(path); err != nil {
-		return err
-	}
-
-	pass, err := prompt("recovery passphrase", false)
+// vaultDir is the folder a vault is loaded from, the unit trust is granted to.
+func vaultDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("trust: %w", err)
 	}
-	dk, err := devkey.Open()
-	if err != nil {
-		return err
+	// Symlinked checkouts are one place, so resolve the folder. The vault
+	// itself may still be being created, so only the directory is resolved.
+	if resolved, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return resolved, nil
 	}
-	defer func() { _ = dk.Close() }()
-
-	if err := trustVault(path, pass, dk); err != nil {
-		return err
-	}
-
-	pins, err := loadPins(path)
-	if err != nil {
-		return err
-	}
-	for _, signer := range pins.Signers {
-		fmt.Println(signer)
-	}
-	fmt.Printf("pinned %d signer(s) for %s\n", len(pins.Signers), path)
-	if len(pins.Revoked) > 0 {
-		fmt.Printf("forgotten %d revoked signing key(s), everything in this file is trusted again\n", len(pins.Revoked))
-	}
-	return nil
+	return filepath.Dir(abs), nil
 }
 
-// trustVault pins the vault's signers after checking the vault against them
-// and proving the wraps hold one vault key, the recovery step for a vault that
-// was knowingly replaced. It also forgets every revoked signing key, since a
-// replacement is a new baseline.
-func trustVault(path, pass string, dk seal.DeviceKey) error {
-	f, err := vault.Load(path)
-	if err != nil {
-		return err
-	}
-	pubs, err := f.SignerPubs()
-	if err != nil {
-		return err
-	}
-	if err := f.Verify(pubs); err != nil {
-		if !errors.Is(err, vault.ErrNoSig) {
-			return err
-		}
-		fmt.Fprintln(
-			os.Stderr,
-			"trust: this vault carries no signature, nothing could be verified, pinning its signers anyway",
-		)
-	}
-	if err := proveKey(f, pass, dk); err != nil {
-		return err
-	}
-
-	return savePins(path, pinFile{Signers: registrySigners(f)})
+// addPath appends one folder to a sorted list.
+func addPath(paths []string, dir string) []string {
+	out := append(slices.Clone(paths), dir)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
-// checkBless decides whether this machine may stamp a vault with no signature.
-// Pins matching the registry mean the registry itself is already vouched for.
-func checkBless(f *vault.File, pins pinFile) error {
-	if err := refuseRevoked(f, pins); err != nil {
-		return err
-	}
-	if len(pins.Signers) == 0 || slices.Equal(pins.Signers, registrySigners(f)) {
-		return nil
-	}
-	return errors.New(
-		"sign: the vault's signers do not match this machine's pinned signers, if you knowingly replaced it run fuu trust first",
-	)
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

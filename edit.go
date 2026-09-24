@@ -11,36 +11,23 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
 
-	"github.com/mizuchilabs/fuu/internal/resolve"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// cmdEdit opens one project in $EDITOR and writes back only what changed. The
-// buffer is TOML so values with quotes or newlines survive a round trip exactly.
+// cmdEdit opens this vault's secrets in $EDITOR and writes back only what
+// changed. The buffer is TOML so values with quotes or newlines survive a
+// round trip exactly.
 func cmdEdit(ctx context.Context, cmd *cli.Command) error {
-	project := cmd.Args().Get(0)
-	if project == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("edit: %w", err)
-		}
-		if project, err = resolve.Project(wd); err != nil {
-			return err
-		}
-	}
-	if project == "" {
-		return errors.New("edit: no project here, name one")
-	}
-	if !singleLineName(project) {
-		return fmt.Errorf("edit: project name %q cannot go into the edit buffer safely", project)
-	}
+	sweepEditBufs()
 
-	path := cmd.String("vault")
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
 
 	release, err := lockVault(path)
 	if err != nil {
@@ -55,14 +42,12 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	before, err := f.Project(key, project)
-	if errors.Is(err, vault.ErrNoProject) {
-		before = map[string]string{}
-	} else if err != nil {
+	before, err := f.Values(key)
+	if err != nil {
 		return err
 	}
 
-	raw, err := runEditor(ctx, project, before)
+	raw, err := runEditor(ctx, before)
 	if err != nil {
 		return err
 	}
@@ -73,7 +58,7 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	// An empty buffer is far more likely a botched edit than a real intention,
 	// so dropping every key takes one extra word instead of being refused.
 	if len(edited) == 0 && len(before) > 0 {
-		ok, err := confirm(fmt.Sprintf("drop every key in %q", project))
+		ok, err := confirm("drop every key in this vault")
 		if err != nil {
 			return err
 		}
@@ -82,20 +67,12 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	fresh, err := vault.Load(path)
-	if err != nil {
-		return err
-	}
-	if err := verifyPinned(path, fresh); err != nil {
-		return err
-	}
-
 	var wrote, dropped []string
 	for _, name := range slices.Sorted(maps.Keys(edited)) {
 		if old, ok := before[name]; ok && old == edited[name] {
 			continue
 		}
-		if err := fresh.Set(key, project, name, []byte(edited[name])); err != nil {
+		if err := f.Set(key, name, []byte(edited[name])); err != nil {
 			return err
 		}
 		wrote = append(wrote, name)
@@ -104,7 +81,7 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		if _, ok := edited[name]; ok {
 			continue
 		}
-		if err := fresh.Unset(project, name); err != nil {
+		if err := f.Unset(key, name); err != nil {
 			return err
 		}
 		dropped = append(dropped, name)
@@ -114,7 +91,7 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		fmt.Println("no changes")
 		return nil
 	}
-	if err := signAndSave(fresh, path); err != nil {
+	if err := signAndSave(f, key, path); err != nil {
 		return err
 	}
 	for _, name := range wrote {
@@ -126,8 +103,28 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// runEditor shows values as TOML in the user's editor and returns the result.
-func runEditor(ctx context.Context, project string, values map[string]string) ([]byte, error) {
+// sweepEditBufs removes buffers left behind by a force killed editor, they
+// hold the vault's secrets in plaintext in a world readable folder.
+func sweepEditBufs() {
+	tmp := os.TempDir()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "fuu-editbuf-") {
+			_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
+		}
+	}
+}
+
+// runEditor shows the values as TOML in the user's editor and returns the result.
+func runEditor(ctx context.Context, values map[string]string) ([]byte, error) {
+	argv := strings.Fields(editor())
+	if len(argv) == 0 {
+		return nil, errors.New("edit: set $EDITOR or $VISUAL")
+	}
+
 	dir, err := os.MkdirTemp("", "fuu-editbuf-")
 	if err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
@@ -137,7 +134,7 @@ func runEditor(ctx context.Context, project string, values map[string]string) ([
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "# %s\n# save and close to write the changes back, delete a line to drop a key\n\n", project)
+	fmt.Fprint(&buf, "# save and close to write the changes back, delete a line to drop a key\n\n")
 	if err := toml.NewEncoder(&buf).Encode(values); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
@@ -147,10 +144,6 @@ func runEditor(ctx context.Context, project string, values map[string]string) ([
 		return nil, fmt.Errorf("edit: %w", err)
 	}
 
-	argv := strings.Fields(editor())
-	if len(argv) == 0 {
-		return nil, errors.New("edit: set $EDITOR or $VISUAL")
-	}
 	//nolint:gosec // the editor is whatever the user configured.
 	child := exec.CommandContext(ctx, argv[0], append(argv[1:], path)...)
 	child.Stdin = os.Stdin
@@ -188,16 +181,4 @@ func parseValues(raw []byte) (map[string]string, error) {
 		}
 	}
 	return values, nil
-}
-
-// The name sits in the buffer's comment header, so anything TOML reads as a
-// newline there would let the name carry its own lines past the comment and
-// pre-seed keys into the buffer.
-func singleLineName(name string) bool {
-	for _, r := range name {
-		if !unicode.IsPrint(r) {
-			return false
-		}
-	}
-	return name != ""
 }

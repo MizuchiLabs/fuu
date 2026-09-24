@@ -5,18 +5,163 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/mizuchilabs/fuu/internal/devkey"
-	"github.com/mizuchilabs/fuu/internal/sig"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
+// cmdTrust is the one step that introduces a signing key this machine has
+// never seen: a machine joining, a vault you knowingly replaced, or the first
+// use of a clone. Everything else follows signatures it already accepts.
+func cmdTrust(_ context.Context, cmd *cli.Command) error {
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+
+	release, err := lockVault(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	f, err := vault.Load(path)
+	if err != nil {
+		return err
+	}
+
+	dk, key, err := openKey(f)
+	switch {
+	case err == nil:
+		defer func() { _ = dk.Close() }()
+	case errors.Is(err, vault.ErrNoDevice):
+		// Not enrolled here, so the recovery passphrase is the only proof
+		// this file is a continuation of the vault it claims to be.
+		pass, perr := prompt("recovery passphrase", false)
+		if perr != nil {
+			return perr
+		}
+		if err := proveKey(f, pass, nil); err != nil {
+			return err
+		}
+		if key, err = f.VaultKeyPass(pass); err != nil {
+			return err
+		}
+		defer clear(key)
+	default:
+		return err
+	}
+
+	if err := showVault(f, key); err != nil {
+		return err
+	}
+	ok, err := confirm("accept this vault here")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("trust: aborted, nothing recorded")
+	}
+
+	if err := trustVault(path, f, key); err != nil {
+		return err
+	}
+	fmt.Printf("accepted %s, %d signing key(s) trusted here\n", path, len(mustSigners(f, key)))
+	return nil
+}
+
+// joinWithPassphrase proves the file with the recovery passphrase and hands
+// back the vault key. A nil device key means this machine is not enrolled yet,
+// so the recovery wrap is the only proof that can be given.
+func joinWithPassphrase(f *vault.File) ([]byte, error) {
+	pass, err := prompt("recovery passphrase", false)
+	if err != nil {
+		return nil, err
+	}
+	if err := proveKey(f, pass, nil); err != nil {
+		return nil, err
+	}
+	return f.VaultKeyPass(pass)
+}
+
+// showVault prints what is about to be accepted, the only thing standing
+// between a knowingly replaced vault and a doctored one.
+func showVault(f *vault.File, key []byte) error {
+	devices, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("vault %s, write %d, %d device(s)\n", f.VaultID, f.Seq, len(devices))
+	signer := f.Signer
+	for _, pub := range slices.Sorted(maps.Keys(devices)) {
+		meta := devices[pub]
+		fmt.Printf("  %s\t%s\t%s\n", meta.Name, meta.Created, pub)
+		if meta.SignPub == signer {
+			signer = meta.Name
+		}
+	}
+	fmt.Printf("last write signed by %s\n", signer)
+	return nil
+}
+
+func mustSigners(f *vault.File, key []byte) []string {
+	signers, err := f.Signers(key)
+	if err != nil {
+		return nil
+	}
+	return signers
+}
+
+// cmdVerify reports the state this machine has accepted.
+func cmdVerify(_ context.Context, cmd *cli.Command) error {
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+	f, err := openVerified(path)
+	if err != nil {
+		return err
+	}
+
+	pins, err := loadPins(f.VaultID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("vault %s, write %d\n", f.VaultID, f.Seq)
+	fmt.Printf("%d signing key(s) accepted here\n", len(pins.Signers))
+
+	dk, key, err := openKey(f)
+	if err != nil {
+		fmt.Println("signature ok, this machine is not enrolled here")
+		return nil
+	}
+	defer func() { _ = dk.Close() }()
+	defer clear(key)
+
+	meta, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	for _, pub := range slices.Sorted(maps.Keys(meta)) {
+		if meta[pub].SignPub == f.Signer {
+			fmt.Printf("signature ok, signed by %s\n", meta[pub].Name)
+			return nil
+		}
+	}
+	fmt.Println("signature ok, signer is not enrolled in this vault")
+	return nil
+}
+
+// cmdRotate replaces the vault key and rewraps everything under it.
 func cmdRotate(_ context.Context, cmd *cli.Command) error {
-	release, err := lockVault(cmd.String("vault"))
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+
+	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
@@ -29,168 +174,23 @@ func cmdRotate(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	pass, err := prompt("new recovery passphrase", true)
+	pass, err := recoveryPassphrase(cmd, "new recovery passphrase")
 	if err != nil {
-		return err
-	}
-	if err := checkPassphrase(pass); err != nil {
 		return err
 	}
 	if err := f.Rotate(key, pass); err != nil {
 		return err
 	}
-	if err := signAndSave(f, cmd.String("vault")); err != nil {
+	// The vault key changed, so the values are addressed under the new one.
+	rotated, err := f.VaultKey(dk)
+	if err != nil {
+		return err
+	}
+	defer clear(rotated)
+	if err := signAndSave(f, rotated, path); err != nil {
 		return err
 	}
 
 	fmt.Println("rotated the vault key")
 	return nil
-}
-
-func cmdSign(_ context.Context, cmd *cli.Command) error {
-	path := cmd.String("vault")
-
-	release, err := lockVault(path)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	f, err := vault.Load(path)
-	if err != nil {
-		return err
-	}
-	pins, err := loadPins(path)
-	if err != nil {
-		return err
-	}
-	// The one blessing command, and only for a vault with no signature. A
-	// signature that no longer holds is tampering and is never blessed over.
-	err = verifyPinned(path, f)
-	if err == nil {
-		fmt.Println("already signed, nothing to do")
-		return nil
-	}
-	if !errors.Is(err, vault.ErrNoSig) {
-		return err
-	}
-	if err := checkBless(f, pins); err != nil {
-		return err
-	}
-	if len(pins.Signers) > 0 {
-		fmt.Fprintln(
-			os.Stderr,
-			"sign: stamping a vault with no signature; if you did not just replace it, stop and check where this file came from",
-		)
-		ok, err := confirm("stamp this unsigned vault")
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errors.New("sign: aborted, nothing written")
-		}
-		pass, err := prompt("recovery passphrase", false)
-		if err != nil {
-			return err
-		}
-		dk, err := devkey.Open()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = dk.Close() }()
-		if err := proveKey(f, pass, dk); err != nil {
-			return err
-		}
-	}
-	if err := signAndSave(f, path); err != nil {
-		return err
-	}
-
-	fmt.Printf("stamped %s\n", path)
-	return nil
-}
-
-func cmdVerify(_ context.Context, cmd *cli.Command) error {
-	f, err := openVerified(cmd.String("vault"))
-	if err != nil {
-		return err
-	}
-
-	pins, err := loadPins(cmd.String("vault"))
-	if err != nil {
-		return err
-	}
-	fmt.Printf("pinned %d signer(s) for this vault\n", len(pins.Signers))
-	if len(pins.Revoked) > 0 {
-		fmt.Printf("revoked %d signing key(s) here\n", len(pins.Revoked))
-	}
-
-	for _, name := range slices.Sorted(maps.Keys(f.Device)) {
-		if f.Device[name].SignPub == f.Signer {
-			fmt.Printf("signature ok, signed by %s\n", name)
-			return nil
-		}
-	}
-	fmt.Println("signature ok, signer is not in the device registry")
-	return nil
-}
-
-// unlock loads the vault, checks it against this machine's pinned signers and unseals the vault key with this machine's TPM.
-func unlock(cmd *cli.Command) (*vault.File, *devkey.Key, []byte, error) {
-	f, err := openVerified(cmd.String("vault"))
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	dk, key, err := openKey(f)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return f, dk, key, nil
-}
-
-// openKey unseals the vault key with this machine's TPM.
-func openKey(f *vault.File) (*devkey.Key, []byte, error) {
-	dk, err := devkey.Open()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	key, err := f.VaultKey(dk)
-	if err != nil {
-		_ = dk.Close()
-		return nil, nil, err
-	}
-	return dk, key, nil
-}
-
-// signAndSave stamps the vault with this machine's signing key before writing
-// it, so no mutation is ever saved unsigned. Checking happens at load time
-// before anything changes, never here against a stale signature.
-func signAndSave(f *vault.File, path string) error {
-	sk, err := devkey.OpenSigning()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sk.Close() }()
-
-	mine, err := sig.EncodeSigner(sk.Public())
-	if err != nil {
-		return err
-	}
-	if !slices.Contains(registrySigners(f), mine) {
-		return errors.New("sign: this machine's signing key is not in the device registry of this vault, join it first")
-	}
-
-	if err := f.Stamp(sk); err != nil {
-		return err
-	}
-	if err := f.Save(path); err != nil {
-		return err
-	}
-
-	// The saved registry was just signed by a key this machine controls, so
-	// the pins follow it and devices enrolled or revoked elsewhere take
-	// effect here on the next pull. Revoked keys stay revoked.
-	return adoptRegistry(path, registrySigners(f))
 }

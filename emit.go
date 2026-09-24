@@ -15,7 +15,7 @@ import (
 // shellHazards are variable names that reach past a plain secret once the hook
 // evals the export line: they run code or take the shell over. The list is the
 // price of eval integration. A key named like one of these stays in the vault,
-// usable through fuu run and fuu get, and never reaches the shell.
+// readable through fuu get, and never reaches the shell or a child process.
 var shellHazards = map[string]struct{}{
 	"BASHOPTS":              {},
 	"BASH_COMPAT":           {},
@@ -146,14 +146,14 @@ func (e emitter) unload(loaded []string) {
 	for _, name := range loaded {
 		e.unset(name)
 	}
-	if len(loaded) == 0 && os.Getenv("FUU_PROJECT") == "" && os.Getenv("FUU_STAMP") == "" {
+	if len(loaded) == 0 && os.Getenv("FUU_STAMP") == "" {
 		return
 	}
 	if e.fish {
-		fmt.Println("set -e FUU_LOADED FUU_PROJECT FUU_STAMP")
+		fmt.Println("set -e FUU_LOADED FUU_STAMP")
 		return
 	}
-	fmt.Println("unset FUU_LOADED FUU_PROJECT FUU_STAMP")
+	fmt.Println("unset FUU_LOADED FUU_STAMP")
 }
 
 func shQuote(s string) string {

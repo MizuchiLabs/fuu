@@ -5,6 +5,11 @@
 // secret values. Every body is nonce || ciphertext in [base64.RawURLEncoding],
 // so the vault file stores nothing but base64 and envelopes copy verbatim
 // between machines.
+//
+// Values and the metadata blob carry their slot as additional data, so a body
+// cut from one entry cannot be pasted into another. Key names never appear in
+// the file at all: NameToken maps a name to a stable opaque identifier under
+// the vault key.
 package seal
 
 import (
@@ -12,6 +17,7 @@ import (
 	"crypto/ecdh"
 	"crypto/elliptic"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -27,9 +33,17 @@ const (
 	// p256Info binds device wraps to this key schedule version.
 	p256Info = "fuu/v1/p256"
 
+	// nameInfo binds name tokens to this version, so a token from one format
+	// cannot address an entry of another.
+	nameInfo = "fuu/v2/name\x00"
+
+	// tokenSize keeps name tokens collision free for a personal vault while
+	// staying short enough to read in a diff.
+	tokenSize = 12
+
 	argon2KDF  = "argon2id" // the only KDF this package writes or reads
 	argon2Time = 3          // argon2id passes over memory
-	argon2Mem  = 65536      // argon2id memory in KiB
+	argon2Mem  = 262144     // argon2id memory in KiB, 256 MiB
 	argon2Salt = 16         // random salt bytes
 
 	// Stored cost parameters are bounded at unwrap because a vault can be
@@ -92,7 +106,7 @@ func WrapKey(recipient *ecdh.PublicKey, vaultKey []byte) (KeyWrap, error) {
 	if err != nil {
 		return KeyWrap{}, fmt.Errorf("seal: wrapping key: %w", err)
 	}
-	body, err := sealBody(aead, vaultKey)
+	body, err := sealBody(aead, vaultKey, nil)
 	if err != nil {
 		return KeyWrap{}, err
 	}
@@ -124,7 +138,7 @@ func UnwrapKey(dk DeviceKey, w KeyWrap) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("seal: wrapping key: %w", err)
 	}
-	return openBody(aead, w.Body)
+	return openBody(aead, w.Body, nil)
 }
 
 // WrapPassphrase seals vaultKey under passphrase with argon2id, echoing the
@@ -141,7 +155,7 @@ func WrapPassphrase(passphrase string, vaultKey []byte) (PassWrap, error) {
 	if err != nil {
 		return PassWrap{}, fmt.Errorf("seal: passphrase key: %w", err)
 	}
-	body, err := sealBody(aead, vaultKey)
+	body, err := sealBody(aead, vaultKey, nil)
 	if err != nil {
 		return PassWrap{}, err
 	}
@@ -176,25 +190,42 @@ func UnwrapPassphrase(passphrase string, w PassWrap) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("seal: passphrase key: %w", err)
 	}
-	return openBody(aead, w.Body)
+	return openBody(aead, w.Body, nil)
 }
 
-// WrapValue seals one secret value directly under the vault key.
-func WrapValue(vaultKey, plaintext []byte) (string, error) {
+// NameToken maps a key name to the stable opaque identifier the vault file
+// stores it under. Same vault key and same name always give the same token,
+// so a diff still shows which entry changed while the name stays out of the
+// file. The token reveals nothing without the vault key.
+func NameToken(vaultKey []byte, name string) (string, error) {
+	if len(vaultKey) != chacha20poly1305.KeySize {
+		return "", fmt.Errorf("seal: vault key is %d bytes, want %d", len(vaultKey), chacha20poly1305.KeySize)
+	}
+	mac := hmac.New(sha256.New, vaultKey)
+	mac.Write([]byte(nameInfo))
+	mac.Write([]byte(name))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:tokenSize]), nil
+}
+
+// WrapValue seals one plaintext under the vault key, bound to the aad slot so
+// a body cannot be moved from one entry to another.
+func WrapValue(vaultKey, plaintext []byte, aad string) (string, error) {
 	aead, err := chacha20poly1305.NewX(vaultKey)
 	if err != nil {
 		return "", fmt.Errorf("seal: vault key: %w", err)
 	}
-	return sealBody(aead, plaintext)
+	return sealBody(aead, plaintext, []byte(aad))
 }
 
-// UnwrapValue opens a value body with the vault key.
-func UnwrapValue(vaultKey []byte, body string) ([]byte, error) {
+// UnwrapValue opens a value body with the vault key and the same aad it was
+// sealed with. A wrong key, a tampered body or a body moved to another slot
+// fails as an error and no plaintext.
+func UnwrapValue(vaultKey []byte, body, aad string) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(vaultKey)
 	if err != nil {
 		return nil, fmt.Errorf("seal: vault key: %w", err)
 	}
-	return openBody(aead, body)
+	return openBody(aead, body, []byte(aad))
 }
 
 // deriveWrappingKey is the ECIES key schedule of age-plugin-tpm, HKDF-SHA256
@@ -239,26 +270,25 @@ func parseEPub(s string) (*ecdh.PublicKey, error) {
 
 	peer, err := ecdh.P256().NewPublicKey(uncompressed)
 	if err != nil {
-		return nil, fmt.Errorf("seal: ephemeral public key: %w", err)
+		return nil, fmt.Errorf("seal: parse ephemeral public key: %w", err)
 	}
 	return peer, nil
 }
 
 // sealBody encrypts plaintext as base64 of nonce || ciphertext, a fresh
 // random nonce on every call.
-func sealBody(aead cipher.AEAD, plaintext []byte) (string, error) {
+func sealBody(aead cipher.AEAD, plaintext, aad []byte) (string, error) {
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("seal: generate nonce: %w", err)
 	}
 	// Sealing onto the nonce appends the ciphertext behind it in one buffer.
-	body := aead.Seal(nonce, nonce, plaintext, nil)
+	body := aead.Seal(nonce, nonce, plaintext, aad)
 	return base64.RawURLEncoding.EncodeToString(body), nil
 }
 
-// openBody is the inverse of sealBody, a wrong key or a tampered body fails
-// as an error and no plaintext.
-func openBody(aead cipher.AEAD, body string) ([]byte, error) {
+// openBody is the inverse of sealBody.
+func openBody(aead cipher.AEAD, body string, aad []byte) ([]byte, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(body)
 	if err != nil {
 		return nil, fmt.Errorf("seal: decode body: %w", err)
@@ -267,7 +297,7 @@ func openBody(aead cipher.AEAD, body string) ([]byte, error) {
 	if len(raw) < nonceSize+aead.Overhead() {
 		return nil, fmt.Errorf("seal: body is %d bytes, too short to open", len(raw))
 	}
-	plain, err := aead.Open(nil, raw[:nonceSize], raw[nonceSize:], nil)
+	plain, err := aead.Open(nil, raw[:nonceSize], raw[nonceSize:], aad)
 	if err != nil {
 		return nil, fmt.Errorf("seal: open body: %w", err)
 	}

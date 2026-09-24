@@ -5,17 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"strings"
 
 	"github.com/urfave/cli/v3"
 	"golang.org/x/term"
+
+	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
 func cmdSet(_ context.Context, cmd *cli.Command) error {
-	project, name, err := splitTarget(cmd.Args().Get(0))
+	name, err := secretName(cmd, "set: want <KEY> [value]")
 	if err != nil {
 		return err
 	}
@@ -45,51 +45,60 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(os.Stderr, "set: %q configures the shell itself, the hook keeps it out of your shell\n", name)
 	}
 
-	release, err := lockVault(cmd.String("vault"))
+	path, err := vaultPath(cmd)
 	if err != nil {
 		return err
 	}
-	defer release()
-
-	f, dk, key, err := unlock(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	if err := f.Set(key, project, name, []byte(value)); err != nil {
-		return err
-	}
-	return signAndSave(f, cmd.String("vault"))
-}
-
-func cmdUnset(_ context.Context, cmd *cli.Command) error {
-	project, name, err := splitTarget(cmd.Args().Get(0))
-	if err != nil {
-		return err
-	}
-
-	path := cmd.String("vault")
-
 	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	f, err := openVerified(path)
+	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	if err := f.Unset(project, name); err != nil {
+	defer func() { _ = dk.Close() }()
+	defer clear(key)
+
+	if err := f.Set(key, name, []byte(value)); err != nil {
 		return err
 	}
-	return signAndSave(f, path)
+	return signAndSave(f, key, path)
+}
+
+func cmdUnset(_ context.Context, cmd *cli.Command) error {
+	name, err := secretName(cmd, "unset: want <KEY>")
+	if err != nil {
+		return err
+	}
+
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+	release, err := lockVault(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	f, dk, key, err := unlock(cmd)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dk.Close() }()
+	defer clear(key)
+
+	if err := f.Unset(key, name); err != nil {
+		return err
+	}
+	return signAndSave(f, key, path)
 }
 
 func cmdGet(_ context.Context, cmd *cli.Command) error {
-	project, name, err := splitTarget(cmd.Args().Get(0))
+	name, err := secretName(cmd, "get: want <KEY>")
 	if err != nil {
 		return err
 	}
@@ -101,7 +110,7 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	value, err := f.Get(key, project, name)
+	value, err := f.Get(key, name)
 	if err != nil {
 		return err
 	}
@@ -112,43 +121,37 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 		out += "\n"
 	}
 	fmt.Print(out)
+	clear(value)
 	return nil
 }
 
 func cmdLs(_ context.Context, cmd *cli.Command) error {
-	f, err := openVerified(cmd.String("vault"))
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf(
-			"ls: no vault at %s, run fuu init or point --vault or FUU_VAULT at yours",
-			cmd.String("vault"),
-		)
-	}
+	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dk.Close() }()
+	defer clear(key)
 
-	project := cmd.Args().Get(0)
-	if project == "" {
-		for _, name := range slices.Sorted(maps.Keys(f.Secret)) {
-			fmt.Println(name)
-		}
-		return nil
+	names, err := f.Names(key)
+	if err != nil {
+		return err
 	}
-
-	keys, ok := f.Secret[project]
-	if !ok {
-		return fmt.Errorf("vault: no such project %q", project)
-	}
-	for _, name := range slices.Sorted(maps.Keys(keys)) {
+	for _, name := range names {
 		fmt.Println(name)
 	}
 	return nil
 }
 
-func splitTarget(s string) (project, name string, err error) {
-	project, name, ok := strings.Cut(s, ":")
-	if !ok || project == "" || name == "" {
-		return "", "", fmt.Errorf("target %q is not PROJECT:KEY", s)
+// secretName takes the <KEY> argument and checks it before the TPM or the
+// vault is touched.
+func secretName(cmd *cli.Command, usage string) (string, error) {
+	name := cmd.Args().Get(0)
+	if name == "" {
+		return "", errors.New(usage)
 	}
-	return project, name, nil
+	if !vault.ValidName(name) {
+		return "", fmt.Errorf("%w %q", vault.ErrBadName, name)
+	}
+	return name, nil
 }

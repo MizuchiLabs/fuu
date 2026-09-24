@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -30,42 +31,64 @@ func cmdDoctor(_ context.Context, cmd *cli.Command) error {
 	fmt.Println("tpm: ok")
 	fmt.Println("pub:", vault.Pub(dk.Public()))
 
-	path := cmd.String("vault")
-	f, err := vault.Load(path)
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Printf("vault: none at %s\n", path)
+	path, err := vaultPath(cmd)
+	if errors.Is(err, errNoVault) {
+		fmt.Println("vault: none here")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-
-	fmt.Println("vault:", path)
-	if err := verifyPinned(path, f); err != nil {
+	f, err := openVerified(path)
+	if err != nil {
 		return err
 	}
+	fmt.Println("vault:", path)
+	fmt.Println("write:", f.Seq)
 	fmt.Println("sig: ok")
 
-	name, err := f.Match(dk)
-	if err != nil {
+	unsealed, key, err := openKey(f)
+	if errors.Is(err, vault.ErrNoDevice) {
 		fmt.Println("device: not enrolled here")
 		return nil
 	}
-	fmt.Println("device:", name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unsealed.Close() }()
+	defer clear(key)
+
+	pub, err := f.Match(dk)
+	if err != nil {
+		return err
+	}
+	meta, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	fmt.Println("device:", meta[pub].Name)
 	return nil
 }
 
 func cmdInit(_ context.Context, cmd *cli.Command) error {
-	path := cmd.String("vault")
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("init: %s already exists", path)
-	}
-
-	pass, err := prompt("recovery passphrase", true)
-	if err != nil {
+	path, err := vaultPath(cmd)
+	switch {
+	case err == nil:
+	case errors.Is(err, errNoVault):
+		if path, err = repoVaultPath(); err != nil {
+			return err
+		}
+	default:
 		return err
 	}
-	if err := checkPassphrase(pass); err != nil {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("init: %s already exists", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("init: %w", err)
+	}
+
+	pass, err := recoveryPassphrase(cmd, "recovery passphrase")
+	if err != nil {
 		return err
 	}
 
@@ -81,20 +104,50 @@ func cmdInit(_ context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = sk.Close() }()
 
-	f, err := vault.New(dk, deviceName(cmd), pass, sk.Public())
+	name := deviceName(cmd)
+	f, err := vault.New(dk, pass, name, sk.Public())
 	if err != nil {
 		return err
 	}
-	if err := signAndSave(f, path); err != nil {
+	key, err := f.VaultKey(dk)
+	if err != nil {
 		return err
 	}
+	defer clear(key)
 
-	fmt.Printf("created %s with device %q\n", path, deviceName(cmd))
+	if err := signAndSave(f, key, path); err != nil {
+		return err
+	}
+	fmt.Printf("created %s as device %s\n", path, name)
 	return nil
 }
 
+// repoVaultPath is where fuu init puts a new vault: the repository root, so
+// one checkout is one vault. Outside any repository it stays in the working
+// directory.
+func repoVaultPath() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("init: %w", err)
+	}
+	dir := cwd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return filepath.Join(dir, "fuu.toml"), nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return filepath.Join(cwd, "fuu.toml"), nil
+		}
+		dir = parent
+	}
+}
+
 func cmdJoin(_ context.Context, cmd *cli.Command) error {
-	path := cmd.String("vault")
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
 
 	release, err := lockVault(path)
 	if err != nil {
@@ -102,19 +155,16 @@ func cmdJoin(_ context.Context, cmd *cli.Command) error {
 	}
 	defer release()
 
-	f, err := openVerified(path)
+	// First contact on this machine, so there are no pins to verify against
+	// yet. The recovery passphrase is the proof that this file continues a
+	// vault that exists.
+	f, err := vault.Load(path)
 	if err != nil {
 		return err
 	}
-
-	pass, err := prompt("recovery passphrase", false)
+	key, err := joinWithPassphrase(f)
 	if err != nil {
 		return err
-	}
-
-	key, err := f.VaultKeyPass(pass)
-	if err != nil {
-		return fmt.Errorf("join: %w", err)
 	}
 	defer clear(key)
 
@@ -131,14 +181,15 @@ func cmdJoin(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = sk.Close() }()
 
 	name := deviceName(cmd)
-	if err := f.AddDevice(key, name, dk.Public(), sk.Public()); err != nil {
+	created := time.Now().Format("2006-01-02")
+	if err := f.AddDevice(key, name, created, dk.Public(), sk.Public()); err != nil {
 		return err
 	}
-	if err := signAndSave(f, path); err != nil {
+	if err := signAndSave(f, key, path); err != nil {
 		return err
 	}
 
-	fmt.Printf("enrolled device %q in %s\n", name, path)
+	fmt.Printf("enrolled device %s\n", name)
 	return nil
 }
 
@@ -150,23 +201,38 @@ func cmdWhoami(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	name, err := f.Match(dk)
+	pub, err := f.Match(dk)
 	if err != nil {
-		return fmt.Errorf("whoami: %w", err)
+		return err
 	}
-	fmt.Println(name)
+	meta, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	fmt.Println(meta[pub].Name)
 	return nil
 }
 
 func cmdDeviceLs(_ context.Context, cmd *cli.Command) error {
-	f, err := openVerified(cmd.String("vault"))
+	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dk.Close() }()
+	defer clear(key)
 
-	for _, name := range slices.Sorted(maps.Keys(f.Device)) {
-		d := f.Device[name]
-		fmt.Printf("%s\t%s\t%s\n", name, d.Created, d.Pub)
+	meta, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	type row struct{ name, created, pub string }
+	rows := make([]row, 0, len(meta))
+	for pub, m := range meta {
+		rows = append(rows, row{m.Name, m.Created, pub})
+	}
+	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.name, b.name) })
+	for _, r := range rows {
+		fmt.Printf("%s\t%s\t%s\n", r.name, r.created, r.pub)
 	}
 	return nil
 }
@@ -221,7 +287,11 @@ func cmdDeviceAdd(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	release, err := lockVault(cmd.String("vault"))
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
@@ -234,14 +304,16 @@ func cmdDeviceAdd(_ context.Context, cmd *cli.Command) error {
 	defer func() { _ = dk.Close() }()
 	defer clear(key)
 
-	if err := f.AddDevice(key, args[0], pub, signPub); err != nil {
+	name := args[0]
+	created := time.Now().Format("2006-01-02")
+	if err := f.AddDevice(key, name, created, pub, signPub); err != nil {
 		return err
 	}
-	if err := signAndSave(f, cmd.String("vault")); err != nil {
+	if err := signAndSave(f, key, path); err != nil {
 		return err
 	}
 
-	fmt.Printf("enrolled device %q\n", args[0])
+	fmt.Printf("enrolled device %s\n", name)
 	return nil
 }
 
@@ -251,43 +323,56 @@ func cmdDeviceRm(_ context.Context, cmd *cli.Command) error {
 		return errors.New("device rm: want <name>")
 	}
 
-	path := cmd.String("vault")
-
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
 	release, err := lockVault(path)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	f, err := openVerified(path)
-	if err != nil {
-		return err
-	}
-
-	// signAndSave stamps with this machine's signing key, so it must stay
-	// enrolled and cannot be the device going away.
-	dk, err := devkey.Open()
+	f, dk, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dk.Close() }()
+	defer clear(key)
 
+	meta, err := f.Devices(key)
+	if err != nil {
+		return err
+	}
+	pub := ""
+	for p, m := range meta {
+		if m.Name == name {
+			pub = p
+			break
+		}
+	}
+	if pub == "" {
+		return fmt.Errorf("%w %q", vault.ErrNoDevice, name)
+	}
+
+	// signAndSave stamps with this machine's signing key, so the device
+	// doing the revoking has to stay enrolled.
 	self, err := f.Match(dk)
 	if err != nil {
-		return fmt.Errorf("device rm: this machine is not enrolled here, revoke from an enrolled device: %w", err)
+		return err
 	}
-	if self == name {
+	if self == pub {
 		return errors.New("device rm: cannot revoke the device you are on, do it from another enrolled device")
 	}
 
-	if err := f.RemoveDevice(name); err != nil {
+	if err := f.RemoveDevice(key, pub); err != nil {
 		return err
 	}
-	if err := signAndSave(f, path); err != nil {
+	if err := signAndSave(f, key, path); err != nil {
 		return err
 	}
 
-	fmt.Printf("revoked device %q, rotate if it burned\n", name)
+	fmt.Printf("revoked device %s, rotate if it burned\n", name)
 	return nil
 }
 

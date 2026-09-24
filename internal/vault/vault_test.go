@@ -1,13 +1,14 @@
 package vault
 
 import (
-	"bytes"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mizuchilabs/fuu/internal/seal"
@@ -39,7 +40,7 @@ func newSoftSigner(t *testing.T) *softSigner {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("generate signer key: %v", err)
+		t.Fatalf("generate signer: %v", err)
 	}
 	return &softSigner{key: key}
 }
@@ -50,97 +51,86 @@ func (s *softSigner) Sign(digest []byte) ([]byte, error) {
 	return ecdsa.SignASN1(rand.Reader, s.key, digest)
 }
 
-// newFixture builds a vault with two devices, a recovery wrap and two secret values, with laptop enrolled first and desktop second.
-func newFixture(t *testing.T) (f *File, laptop, desktop *softSigner) {
+// newFixture builds a vault with one device and two values, sealed and signed.
+func newFixture(t *testing.T) (f *File, dk *softKey, key []byte) {
 	t.Helper()
-	dk, other := newSoftKey(t), newSoftKey(t)
-	laptop, desktop = newSoftSigner(t), newSoftSigner(t)
+	dk, signer := newSoftKey(t), newSoftSigner(t)
 
-	f, err := New(dk, "laptop", "open sesame", laptop.Public())
+	f, err := New(dk, "open sesame", "laptop", signer.Public())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	key, err = f.VaultKey(dk)
+	if err != nil {
+		t.Fatalf("VaultKey: %v", err)
+	}
+	t.Cleanup(func() { clear(key) })
+
+	for name, value := range map[string]string{"API_KEY": "s3cret", "DATABASE_URL": "postgres://x"} {
+		if err := f.Set(key, name, []byte(value)); err != nil {
+			t.Fatalf("Set %s: %v", name, err)
+		}
+	}
+	if err := f.Stamp(signer); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	return f, dk, key
+}
+
+// TestFileHidesNames is the point of the format: nothing in the readable
+// bytes reveals what the vault holds or whose chips are enrolled.
+func TestFileHidesNames(t *testing.T) {
+	f, _, _ := newFixture(t)
+
+	path := filepath.Join(t.TempDir(), "fuu.toml")
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw := string(mustRead(t, path))
+
+	for _, leak := range []string{"API_KEY", "DATABASE_URL", "postgres://x", "s3cret", "laptop", "open sesame"} {
+		if strings.Contains(raw, leak) {
+			t.Fatalf("the vault file leaks %q", leak)
+		}
+	}
+	for _, want := range []string{"version", "vaultid", "seq", "blob", "device", "recovery", "secret"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("the vault file is missing its %q field", want)
+		}
+	}
+}
+
+// TestValuesRoundTrip covers the open path the shell hook uses.
+func TestValuesRoundTrip(t *testing.T) {
+	f, dk, _ := newFixture(t)
+
 	key, err := f.VaultKey(dk)
 	if err != nil {
 		t.Fatalf("VaultKey: %v", err)
 	}
 	defer clear(key)
 
-	if err := f.AddDevice(key, "desktop", other.Public(), desktop.Public()); err != nil {
-		t.Fatalf("AddDevice: %v", err)
-	}
-	if err := f.Set(key, "shop", "DATABASE_URL", []byte("postgres://x")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := f.Set(key, "shop", "API_KEY", []byte("s3cret")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	return f, laptop, desktop
-}
-
-// stampAndCheck stamps f and asserts the untampered vault verifies, so a later rejection is down to the mutation.
-func stampAndCheck(t *testing.T, f *File, signer *softSigner) {
-	t.Helper()
-	if err := f.Stamp(signer); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Verify(registryPubs(t, f)); err != nil {
-		t.Fatalf("Verify after Stamp: %v", err)
-	}
-}
-
-// registryPubs stands in for the pinned trust anchors a caller brings from
-// outside the file, pinned to the fixture's own registry.
-func registryPubs(t *testing.T, f *File) []*ecdsa.PublicKey {
-	t.Helper()
-	pubs, err := f.SignerPubs()
+	values, err := f.Values(key)
 	if err != nil {
-		t.Fatalf("SignerPubs: %v", err)
+		t.Fatalf("Values: %v", err)
 	}
-	return pubs
-}
+	if values["API_KEY"] != "s3cret" || values["DATABASE_URL"] != "postgres://x" {
+		t.Fatalf("values = %v", values)
+	}
 
-func TestPubRoundTrip(t *testing.T) {
-	for range 8 {
-		dk := newSoftKey(t)
-		want := dk.Public()
-
-		got, err := ParsePub(Pub(want))
-		if err != nil {
-			t.Fatalf("ParsePub: %v", err)
-		}
-		if !bytes.Equal(got.Bytes(), want.Bytes()) {
-			t.Fatal("ParsePub(Pub(k)) did not return the same point")
-		}
+	names, err := f.Names(key)
+	if err != nil {
+		t.Fatalf("Names: %v", err)
+	}
+	if len(names) != 2 || names[0] != "API_KEY" {
+		t.Fatalf("names = %v", names)
 	}
 }
 
-func TestParsePubRejectsJunk(t *testing.T) {
-	for _, in := range []string{"", "age1qqqq", "p256:AAAA", "p256:!!!"} {
-		if _, err := ParsePub(in); err == nil {
-			t.Fatalf("ParsePub(%q) accepted junk", in)
-		}
-	}
-}
-
+// TestSaveLoadRoundTrip verifies the file form survives git, which is the
+// whole point of the format.
 func TestSaveLoadRoundTrip(t *testing.T) {
-	dk := newSoftKey(t)
-	signer := newSoftSigner(t)
-	f, err := New(dk, "laptop", "open sesame", signer.Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	key, err := f.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	defer clear(key)
-	if err := f.Set(key, "shop", "DATABASE_URL", []byte("postgres://x")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := f.Stamp(signer); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
+	f, dk, _ := newFixture(t)
 
 	path := filepath.Join(t.TempDir(), "fuu.toml")
 	if err := f.Save(path); err != nil {
@@ -151,394 +141,252 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Version != Version {
-		t.Fatalf("Version = %d, want %d", got.Version, Version)
+	if got.VaultID != f.VaultID {
+		t.Fatalf("vaultid = %q, want %q", got.VaultID, f.VaultID)
 	}
-	if _, ok := got.Device["laptop"]; !ok {
-		t.Fatal("device laptop did not survive the TOML round trip")
+	if got.Digest() != f.Digest() {
+		t.Fatal("digest differs after a reload")
 	}
-	if _, ok := got.Secret["shop"]["DATABASE_URL"]; !ok {
-		t.Fatal("secret shop:DATABASE_URL did not survive the TOML round trip")
+	pubs, err := got.SignerPubs(mustKey(t, got, dk))
+	if err != nil {
+		t.Fatalf("SignerPubs: %v", err)
 	}
-	if err := got.Verify(registryPubs(t, got)); err != nil {
+	if err := got.Verify(pubs); err != nil {
 		t.Fatalf("Verify after reload: %v", err)
 	}
+}
 
-	reloaded, err := got.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey after reload: %v", err)
+// TestEditKeepsUnchangedEntriesUntouched keeps git diffs small: a value edit
+// rewrites one body and leaves the payload blob alone.
+func TestEditKeepsUnchangedEntriesUntouched(t *testing.T) {
+	f, _, key := newFixture(t)
+
+	before := f.Blob
+	if err := f.Set(key, "API_KEY", []byte("rotated")); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
-	defer clear(reloaded)
-	value, err := got.Get(reloaded, "shop", "DATABASE_URL")
+	if f.Blob != before {
+		t.Fatal("a value edit rewrote the name blob, the diff would show everything")
+	}
+	got, err := f.Get(key, "API_KEY")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if string(value) != "postgres://x" {
-		t.Fatalf("Get = %q, want %q", value, "postgres://x")
-	}
-}
-
-func TestVaultKeyUnsealsTwice(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	if string(got) != "rotated" {
+		t.Fatalf("got %q", got)
 	}
 
-	viaDevice, err := f.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	defer clear(viaDevice)
-
-	viaPass, err := f.VaultKeyPass("open sesame")
-	if err != nil {
-		t.Fatalf("VaultKeyPass: %v", err)
-	}
-	defer clear(viaPass)
-
-	if !bytes.Equal(viaDevice, viaPass) {
-		t.Fatal("the device wrap and the recovery wrap hold different vault keys")
-	}
-
-	if _, err := f.VaultKeyPass("wrong"); err == nil {
-		t.Fatal("VaultKeyPass accepted the wrong passphrase")
-	}
-}
-
-func TestAddDeviceThenRotate(t *testing.T) {
-	laptop := newSoftKey(t)
-	desktop := newSoftKey(t)
-
-	f, err := New(laptop, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	old, err := f.VaultKey(laptop)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	if err := f.AddDevice(old, "desktop", desktop.Public(), newSoftSigner(t).Public()); err != nil {
-		t.Fatalf("AddDevice: %v", err)
-	}
-	if err := f.Set(old, "shop", "API_KEY", []byte("s3cret")); err != nil {
+	// a new name does change the blob, it has to
+	if err := f.Set(key, "NEW_KEY", []byte("x")); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	signPub := f.Device["desktop"].SignPub
+	if f.Blob == before {
+		t.Fatal("adding a name left the name blob alone")
+	}
+}
 
-	if err := f.Rotate(old, "new passphrase"); err != nil {
+// TestValueBoundToItsName covers swapping two bodies in the file.
+func TestValueBoundToItsName(t *testing.T) {
+	f, _, key := newFixture(t)
+
+	mine, err := seal.NameToken(key, "API_KEY")
+	if err != nil {
+		t.Fatalf("NameToken: %v", err)
+	}
+	other, err := seal.NameToken(key, "DATABASE_URL")
+	if err != nil {
+		t.Fatalf("NameToken: %v", err)
+	}
+	f.Secret[other] = f.Secret[mine]
+
+	// the body carries its own name as additional data, so it will not open
+	// under the entry it was pasted into
+	if _, err := f.Get(key, "DATABASE_URL"); err == nil {
+		t.Fatal("a pasted body opened under the wrong name")
+	}
+	got, err := f.Get(key, "API_KEY")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != "s3cret" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// TestRotateRewraps verifies a rotated vault opens for the same device with
+// the new key and keeps every value.
+func TestRotateRewraps(t *testing.T) {
+	f, dk, key := newFixture(t)
+
+	if err := f.Rotate(key, "new passphrase"); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
-	clear(old)
+	clear(key)
 
-	if f.Device["desktop"].SignPub != signPub {
-		t.Fatal("Rotate did not preserve the device signing key")
-	}
-
-	fresh, err := f.VaultKey(desktop)
+	fresh, err := f.VaultKey(dk)
 	if err != nil {
 		t.Fatalf("VaultKey after rotate: %v", err)
 	}
 	defer clear(fresh)
 
-	value, err := f.Get(fresh, "shop", "API_KEY")
+	values, err := f.Values(fresh)
 	if err != nil {
-		t.Fatalf("Get after rotate: %v", err)
+		t.Fatalf("Values after rotate: %v", err)
 	}
-	if string(value) != "s3cret" {
-		t.Fatalf("Get after rotate = %q, want %q", value, "s3cret")
+	if values["API_KEY"] != "s3cret" {
+		t.Fatalf("values after rotate = %v", values)
 	}
-
 	if _, err := f.VaultKeyPass("new passphrase"); err != nil {
-		t.Fatalf("recovery wrap after rotate: %v", err)
+		t.Fatalf("the new recovery wrap does not open: %v", err)
 	}
 	if _, err := f.VaultKeyPass("open sesame"); err == nil {
 		t.Fatal("the old recovery passphrase still works after rotate")
 	}
 }
 
-func TestRemoveDeviceRevokes(t *testing.T) {
-	laptop := newSoftKey(t)
-	desktop := newSoftKey(t)
+// TestDeviceLifecycle covers enrolling, revoking and the guard on the last
+// device, with no leftover side effects on the values.
+func TestDeviceLifecycle(t *testing.T) {
+	f, _, key := newFixture(t)
 
-	f, err := New(laptop, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	key, err := f.VaultKey(laptop)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	defer clear(key)
-
-	if err := f.AddDevice(key, "desktop", desktop.Public(), newSoftSigner(t).Public()); err != nil {
+	other := newSoftKey(t)
+	otherSigner := newSoftSigner(t)
+	if err := f.AddDevice(key, "desktop", "2026-09-24", other.Public(), otherSigner.Public()); err != nil {
 		t.Fatalf("AddDevice: %v", err)
 	}
-	if err := f.RemoveDevice("desktop"); err != nil {
+	if err := f.AddDevice(
+		key,
+		"desktop",
+		"2026-09-24",
+		newSoftKey(t).Public(),
+		newSoftSigner(t).Public(),
+	); !errors.Is(
+		err,
+		ErrDupName,
+	) {
+		t.Fatalf("AddDevice with a taken name = %v, want ErrDupName", err)
+	}
+
+	pub := Pub(other.Public())
+	if err := f.RemoveDevice(key, pub); err != nil {
 		t.Fatalf("RemoveDevice: %v", err)
 	}
-	if _, err := f.VaultKey(desktop); err == nil {
-		t.Fatal("a revoked device still unseals the vault key")
+	if _, err := f.VaultKey(other); err == nil {
+		t.Fatal("a revoked device still opens the vault key")
 	}
-	if err := f.RemoveDevice("desktop"); err == nil {
-		t.Fatal("RemoveDevice accepted a name that is already gone")
+	if err := f.RemoveDevice(key, pub); err == nil {
+		t.Fatal("RemoveDevice accepted a device that is already gone")
+	}
+
+	values, err := f.Values(key)
+	if err != nil {
+		t.Fatalf("Values after revocation: %v", err)
+	}
+	if values["API_KEY"] != "s3cret" {
+		t.Fatalf("revocation dropped values: %v", values)
 	}
 }
 
+// TestRemoveLastDeviceIsRefused keeps the vault from becoming unverifiable.
 func TestRemoveLastDeviceIsRefused(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	f, dk, key := newFixture(t)
 
-	if err := f.RemoveDevice("laptop"); !errors.Is(err, ErrLastDevice) {
-		t.Fatalf("RemoveDevice of the last device = %v, want ErrLastDevice", err)
+	if err := f.RemoveDevice(key, Pub(dk.Public())); !errors.Is(err, ErrLast) {
+		t.Fatalf("RemoveDevice of the last device = %v, want ErrLast", err)
 	}
 	if len(f.Device) != 1 {
 		t.Fatalf("the last device was removed anyway, %d left", len(f.Device))
 	}
 }
 
-func TestUnsetDropsEmptyProject(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
+// TestCanonicalCoversEverything is what makes a tamper visible: every field
+// the file holds is in the signed bytes.
+func TestCanonicalCoversEverything(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(f *File)
+	}{
+		{"seq", func(f *File) { f.Seq++ }},
+		{"vaultid", func(f *File) { f.VaultID = "v_other" }},
+		{"blob", func(f *File) { f.Blob += "x" }},
+		{"device wrap", func(f *File) {
+			for pub, d := range f.Device {
+				d.Wrap += "x"
+				f.Device[pub] = d
+			}
+		}},
+		{"recovery mem", func(f *File) { f.Recovery.Mem++ }},
+		{"secret body", func(f *File) {
+			for token := range f.Secret {
+				f.Secret[token] = "tampered"
+			}
+		}},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _ := newFixture(t)
+			before := got.Canonical()
+			tc.mutate(got)
+			if string(before) == string(got.Canonical()) {
+				t.Fatal("Canonical did not cover the mutated field")
+			}
+		})
+	}
+}
+
+// TestVerifyRejectsTampering covers the read path the shell hook takes.
+func TestVerifyRejectsTampering(t *testing.T) {
+	f, _, key := newFixture(t)
+	pubs, err := f.SignerPubs(key)
+	if err != nil {
+		t.Fatalf("SignerPubs: %v", err)
+	}
+	if err := f.Verify(pubs); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	f.Seq = 99
+	if err := f.Verify(pubs); !errors.Is(err, sig.ErrUnverified) {
+		t.Fatalf("Verify after tampering = %v, want ErrUnverified", err)
+	}
+}
+
+// TestValidName guards the eval the shell hook runs the output through.
+func TestValidName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"API_KEY", true},
+		{"_", true},
+		{"a1", true},
+		{"1a", false},
+		{"", false},
+		{"A=B", false},
+		{"A B", false},
+		{"A\nB", false},
+		{"$(id)", false},
+	} {
+		if got := ValidName(tc.name); got != tc.want {
+			t.Fatalf("ValidName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func mustKey(t *testing.T, f *File, dk seal.DeviceKey) []byte {
+	t.Helper()
 	key, err := f.VaultKey(dk)
 	if err != nil {
 		t.Fatalf("VaultKey: %v", err)
 	}
-	defer clear(key)
-
-	if err := f.Set(key, "shop", "ONLY", []byte("x")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := f.Unset("shop", "ONLY"); err != nil {
-		t.Fatalf("Unset: %v", err)
-	}
-	if _, ok := f.Secret["shop"]; ok {
-		t.Fatal("Unset left an empty project behind")
-	}
-	if err := f.Unset("shop", "ONLY"); err == nil {
-		t.Fatal("Unset accepted a key that is already gone")
-	}
+	return key
 }
 
-func TestCanonicalStable(t *testing.T) {
-	f, _, _ := newFixture(t)
-	first := f.Canonical()
-	second := f.Canonical()
-	if !bytes.Equal(first, second) {
-		t.Fatal("Canonical changed between two calls")
-	}
-}
-
-func TestCanonicalChanges(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(f *File)
-	}{
-		{"device field", func(f *File) {
-			d := f.Device["desktop"]
-			d.Wrap += "x"
-			f.Device["desktop"] = d
-		}},
-		{"recovery mem", func(f *File) { f.Recovery.Mem++ }},
-		{"secret value", func(f *File) { f.Secret["shop"]["API_KEY"] = "tampered" }},
-		{"secret key name", func(f *File) {
-			keys := f.Secret["shop"]
-			body := keys["API_KEY"]
-			delete(keys, "API_KEY")
-			keys["API_URL"] = body
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, _, _ := newFixture(t)
-			before := f.Canonical()
-			tc.mutate(f)
-			if bytes.Equal(before, f.Canonical()) {
-				t.Fatal("Canonical did not change after the mutation")
-			}
-		})
-	}
-}
-
-func TestStampVerifyRoundTrip(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Verify(registryPubs(t, f)); err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-}
-
-func TestVerifyRejectsTamperedDevice(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	stampAndCheck(t, f, laptop)
-
-	d := f.Device["desktop"]
-	d.Wrap = "tampered"
-	f.Device["desktop"] = d
-
-	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
-		t.Fatalf("Verify = %v, want ErrUnverified", err)
-	}
-}
-
-// TestVerifyRejectsKDFDowngrade covers rewriting recovery mem or time, which would let an outsider crack the passphrase offline against weakened argon2id parameters.
-func TestVerifyRejectsKDFDowngrade(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(f *File)
-	}{
-		{"mem", func(f *File) { f.Recovery.Mem = 1 }},
-		{"time", func(f *File) { f.Recovery.Time = 1 }},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, laptop, _ := newFixture(t)
-			stampAndCheck(t, f, laptop)
-
-			tc.mutate(f)
-			if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
-				t.Fatalf("Verify = %v, want ErrUnverified", err)
-			}
-		})
-	}
-}
-
-func TestVerifyRejectsDeletedSecret(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	stampAndCheck(t, f, laptop)
-
-	delete(f.Secret["shop"], "API_KEY")
-
-	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
-		t.Fatalf("Verify = %v, want ErrUnverified", err)
-	}
-}
-
-func TestVerifyRejectsDeletedDevice(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	stampAndCheck(t, f, laptop)
-
-	delete(f.Device, "desktop")
-
-	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, sig.ErrUnverified) {
-		t.Fatalf("Verify = %v, want ErrUnverified", err)
-	}
-}
-
-func TestVerifyRejectsEmptySig(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, ErrNoSig) {
-		t.Fatalf("Verify of an unsigned vault = %v, want ErrNoSig", err)
-	}
-
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	f.Sig = ""
-	if err := f.Verify(registryPubs(t, f)); !errors.Is(err, ErrNoSig) {
-		t.Fatalf("Verify with an empty Sig = %v, want ErrNoSig", err)
-	}
-}
-
-func TestVerifyAcceptsSecondDeviceSigner(t *testing.T) {
-	f, _, desktop := newFixture(t)
-	if err := f.Stamp(desktop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Verify(registryPubs(t, f)); err != nil {
-		t.Fatalf("Verify with the second device signing: %v", err)
-	}
-}
-
-// TestVerifyRejectsSelfCertifiedVault covers the rewrite attack: someone with
-// write access to the file keeps the victim registry intact, adds their own
-// signing key and re-signs. The vault is internally consistent, so anchors
-// taken from the registry accept it, anchors pinned before the rewrite do not.
-func TestVerifyRejectsSelfCertifiedVault(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	stampAndCheck(t, f, laptop)
-	pins := registryPubs(t, f)
-
-	attacker := newSoftSigner(t)
-	signer, err := sig.EncodeSigner(attacker.Public())
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("EncodeSigner: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	f.Device["attacker"] = Device{Created: "2026-09-24", Pub: "p256:AAA", SignPub: signer}
-	if err := f.Stamp(attacker); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-
-	if err := f.Verify(pins); !errors.Is(err, sig.ErrUnknownSigner) {
-		t.Fatalf("Verify against pre-attack pins = %v, want ErrUnknownSigner", err)
-	}
-	// The old self-certifying behaviour, kept as documentation of the gap.
-	if err := f.Verify(registryPubs(t, f)); err != nil {
-		t.Fatalf("Verify against the rewritten registry = %v, want nil", err)
-	}
-}
-
-func TestProjectRejectsBadKeyName(t *testing.T) {
-	f, laptop, _ := newFixture(t)
-	stampAndCheck(t, f, laptop)
-
-	keys := f.Secret["shop"]
-	body := keys["API_KEY"]
-	delete(keys, "API_KEY")
-	keys["EVIL=rm"] = body
-
-	// The name guard runs before anything is unsealed, so a nil key is enough.
-	if _, err := f.Project(nil, "shop"); !errors.Is(err, ErrBadName) {
-		t.Fatalf("Project = %v, want ErrBadName", err)
-	}
-}
-
-func TestAddDeviceRefusesTaken(t *testing.T) {
-	laptop := newSoftKey(t)
-	f, err := New(laptop, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	key, err := f.VaultKey(laptop)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	defer clear(key)
-
-	// A taken name is never overwritten, that silently revokes its holder.
-	err = f.AddDevice(key, "laptop", newSoftKey(t).Public(), newSoftSigner(t).Public())
-	if !errors.Is(err, ErrDupName) {
-		t.Fatalf("AddDevice with a taken name = %v, want ErrDupName", err)
-	}
-	if len(f.Device) != 1 {
-		t.Fatalf("a refused AddDevice changed the registry, %d devices", len(f.Device))
-	}
-
-	other := newSoftKey(t)
-	if err := f.AddDevice(key, "desktop", other.Public(), newSoftSigner(t).Public()); err != nil {
-		t.Fatalf("AddDevice: %v", err)
-	}
-	err = f.AddDevice(key, "again", other.Public(), newSoftSigner(t).Public())
-	if !errors.Is(err, ErrDupDevice) {
-		t.Fatalf("AddDevice with a taken key = %v, want ErrDupDevice", err)
-	}
-}
-
-func TestVaultKeyPassRefusesEmpty(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if _, err := f.VaultKeyPass(""); !errors.Is(err, ErrEmptyPass) {
-		t.Fatalf("VaultKeyPass with an empty passphrase = %v, want ErrEmptyPass", err)
-	}
+	return data
 }

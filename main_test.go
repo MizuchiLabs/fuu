@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,13 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mizuchilabs/fuu/internal/devkey"
 	"github.com/mizuchilabs/fuu/internal/seal"
 	"github.com/mizuchilabs/fuu/internal/sig"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
+
+const fixtureDay = "2026-01-02"
 
 type softKey struct{ key *ecdh.PrivateKey }
 
@@ -55,34 +58,36 @@ func (s *softSigner) Sign(digest []byte) ([]byte, error) {
 	return ecdsa.SignASN1(rand.Reader, s.key, digest)
 }
 
-// isolatePins points the config dir at a temp dir so tests never touch the
-// real pin store, and returns the vault path inside another temp dir.
+// isolatePins points the pin store at a temp dir so tests never touch the
+// real trust anchors, and returns a vault path inside another temp dir.
 func isolatePins(t *testing.T) string {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	dir := t.TempDir()
-	return filepath.Join(dir, "fuu.toml")
+	return filepath.Join(t.TempDir(), "fuu.toml")
 }
 
 // writeVault builds a vault with laptop enrolled, optionally desktop too,
-// signs it with laptop and saves it to path.
-func writeVault(t *testing.T, path string, withDesktop bool) (laptop, desktop *softSigner) {
+// signed by laptop and saved to path. It hands back the open file, the vault
+// key and both signing keys so tests can mutate and re-sign it.
+func writeVault(t *testing.T, path string, withDesktop bool) (*vault.File, []byte, *softSigner, *softSigner) {
 	t.Helper()
-	laptop, desktop = newSoftSigner(t), newSoftSigner(t)
+	laptop, desktop := newSoftSigner(t), newSoftSigner(t)
+	dk := newSoftKey(t)
 
-	f, err := vault.New(newSoftKey(t), "laptop", "open sesame", laptop.Public())
+	f, err := vault.New(dk, "open sesame", "laptop", laptop.Public())
 	if err != nil {
 		t.Fatalf("vault.New: %v", err)
 	}
+	key, err := f.VaultKey(dk)
+	if err != nil {
+		t.Fatalf("VaultKey: %v", err)
+	}
+	t.Cleanup(func() { clear(key) })
+
 	if withDesktop {
-		key, err := f.VaultKeyPass("open sesame")
-		if err != nil {
-			t.Fatalf("VaultKeyPass: %v", err)
-		}
-		if err := f.AddDevice(key, "desktop", newSoftKey(t).Public(), desktop.Public()); err != nil {
+		if err := f.AddDevice(key, "desktop", fixtureDay, newSoftKey(t).Public(), desktop.Public()); err != nil {
 			t.Fatalf("AddDevice: %v", err)
 		}
-		clear(key)
 	}
 	if err := f.Stamp(laptop); err != nil {
 		t.Fatalf("Stamp: %v", err)
@@ -90,44 +95,189 @@ func writeVault(t *testing.T, path string, withDesktop bool) (laptop, desktop *s
 	if err := f.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	return laptop, desktop
+	return f, key, laptop, desktop
 }
 
-func mustPins(t *testing.T, path string) []string {
+func encodeSigner(t *testing.T, pub *ecdsa.PublicKey) string {
 	t.Helper()
-	pins, err := loadPins(path)
+	signer, err := sig.EncodeSigner(pub)
 	if err != nil {
-		t.Fatalf("loadPins: %v", err)
+		t.Fatalf("EncodeSigner: %v", err)
 	}
-	return pins.Signers
+	return signer
 }
 
-// TestVerifyPinnedRejectsSelfCertifiedVault is the regression test for the
-// rewrite attack: an attacker with write access to the vault file adds their
-// own signing key and re-signs. Before pins, the vault certified itself and
-// every read path accepted it.
-func TestVerifyPinnedRejectsSelfCertifiedVault(t *testing.T) {
-	path := isolatePins(t)
-	writeVault(t, path, true)
+// TestTrustKeepsOtherFoldersAccepted covers a regression where accepting a
+// second checkout replaced the folder list and silently untrusted the first.
+func TestTrustKeepsOtherFoldersAccepted(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pathA := filepath.Join(t.TempDir(), "fuu.toml")
+	_, key, _, _ := writeVault(t, pathA, false)
 
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("first open: %v", err)
+	fA, err := vault.Load(pathA)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	pins := mustPins(t, path)
-	if len(pins) != 2 {
-		t.Fatalf("TOFU pinned %d signers, want 2", len(pins))
+	if err := trustVault(pathA, fA, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
 	}
+
+	raw, err := os.ReadFile(pathA)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	pathB := filepath.Join(t.TempDir(), "fuu.toml")
+	if err := os.WriteFile(pathB, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fB, err := vault.Load(pathB)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := trustVault(pathB, fB, key); err != nil {
+		t.Fatalf("trustVault at the second folder: %v", err)
+	}
+
+	if _, err := openVerified(pathA); err != nil {
+		t.Fatalf("accepting a second folder untrusted the first: %v", err)
+	}
+	if _, err := openVerified(pathB); err != nil {
+		t.Fatalf("openVerified at the second folder: %v", err)
+	}
+}
+
+// TestTrustIsScopedToOneFolder covers that accepting a vault in one folder
+// says nothing about a copy of the same bytes in another folder until fuu
+// trust runs there.
+func TestTrustIsScopedToOneFolder(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pathA := filepath.Join(t.TempDir(), "fuu.toml")
+	_, key, _, _ := writeVault(t, pathA, false)
+
+	fA, err := vault.Load(pathA)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := trustVault(pathA, fA, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
+	}
+	if _, err := openVerified(pathA); err != nil {
+		t.Fatalf("openVerified where the vault was accepted: %v", err)
+	}
+
+	pathB := filepath.Join(t.TempDir(), "fuu.toml")
+	raw, err := os.ReadFile(pathA)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := os.WriteFile(pathB, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := openVerified(pathB); !errors.Is(err, errUntrusted) {
+		t.Fatalf("openVerified in another folder = %v, want errUntrusted", err)
+	}
+
+	fB, err := vault.Load(pathB)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := trustVault(pathB, fB, key); err != nil {
+		t.Fatalf("trustVault in the new folder: %v", err)
+	}
+	if _, err := openVerified(pathB); err != nil {
+		t.Fatalf("openVerified after trust in the new folder: %v", err)
+	}
+}
+
+// TestStaleWriteCounterRefused covers rollback protection: the exact bytes
+// this machine accepted always load, a signed mutation loads and moves the
+// record forward, and an older signed copy of the same vault is refused.
+func TestStaleWriteCounterRefused(t *testing.T) {
+	path := isolatePins(t)
+	f, key, laptop, _ := writeVault(t, path, false)
+
+	if err := trustVault(path, f, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
+	}
+	for range 2 {
+		if _, err := openVerified(path); err != nil {
+			t.Fatalf("openVerified of the accepted bytes: %v", err)
+		}
+	}
+
+	older, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	if err := f.Set(key, "API_KEY", []byte("s3cret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.Seq++
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := openVerified(path)
+	if err != nil {
+		t.Fatalf("openVerified after a signed mutation: %v", err)
+	}
+	value, err := got.Get(key, "API_KEY")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(value) != "s3cret" {
+		t.Fatalf("Get = %q, want %q", value, "s3cret")
+	}
+	clear(value)
+	if err := record(path, f, key); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// An older signed copy of the same vault loses to what is accepted here.
+	if err := os.WriteFile(path, older, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := openVerified(path); !errors.Is(err, errStale) {
+		t.Fatalf("openVerified of the rolled back vault = %v, want errStale", err)
+	}
+
+	// The current bytes are fine, however often they are read.
+	if err := os.WriteFile(path, current, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for range 2 {
+		if _, err := openVerified(path); err != nil {
+			t.Fatalf("openVerified of the current bytes: %v", err)
+		}
+	}
+}
+
+// TestSelfCertifiedVaultRefused is the rewrite attack: write access to the
+// file lets an attacker add a device block and re-sign it, but the pins live
+// outside the vault so the fresh signer is never accepted.
+func TestSelfCertifiedVaultRefused(t *testing.T) {
+	path := isolatePins(t)
+	_, key, laptop, _ := writeVault(t, path, false)
 
 	f, err := vault.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	attacker := newSoftSigner(t)
-	signer, err := sig.EncodeSigner(attacker.Public())
-	if err != nil {
-		t.Fatalf("EncodeSigner: %v", err)
+	if err := trustVault(path, f, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
 	}
-	f.Device["attacker"] = vault.Device{Created: "2026-09-24", SignPub: signer}
+
+	attacker := newSoftSigner(t)
+	f.Device["p256:attacker"] = vault.Device{Pub: "p256:attacker", EPub: "attacker", Wrap: "attacker"}
 	if err := f.Stamp(attacker); err != nil {
 		t.Fatalf("Stamp: %v", err)
 	}
@@ -135,100 +285,261 @@ func TestVerifyPinnedRejectsSelfCertifiedVault(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if _, err := openVerified(path); !errors.Is(err, sig.ErrUnknownSigner) {
-		t.Fatalf("openVerified of the rewritten vault = %v, want ErrUnknownSigner", err)
+	if _, err := openVerified(path); !errors.Is(err, errRevoked) {
+		t.Fatalf("openVerified of a self certified vault = %v, want errRevoked", err)
 	}
-	if got := mustPins(t, path); len(got) != 2 {
-		t.Fatalf("pins changed to %d signers after a rejected vault", len(got))
+	pins, err := loadPins(f.VaultID)
+	if err != nil {
+		t.Fatalf("loadPins: %v", err)
+	}
+	if want := []string{encodeSigner(t, laptop.Public())}; !slices.Equal(pins.Signers, want) {
+		t.Fatalf("signers after a rejected vault = %v, want %v", pins.Signers, want)
 	}
 }
 
-// TestVerifyPinnedFollowsBlessedRegistry covers growth and shrinkage: a pinned
-// signature that adds a device grows the pins, one that revokes a device
-// shrinks them, and the revoked device's own signature stops verifying.
-func TestVerifyPinnedFollowsBlessedRegistry(t *testing.T) {
+// TestRevokedDeviceStopsBeingAccepted covers that there is no revocation
+// list: the registry decides which signing keys are accepted, so a device
+// that leaves stops verifying at once and one that comes back is clean.
+func TestRevokedDeviceStopsBeingAccepted(t *testing.T) {
 	path := isolatePins(t)
-	laptop, desktop := writeVault(t, path, false)
+	f, key, laptop, desktop := writeVault(t, path, true)
 
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("first open: %v", err)
+	if err := trustVault(path, f, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
 	}
-	if got := mustPins(t, path); len(got) != 1 {
-		t.Fatalf("TOFU pinned %d signers, want 1", len(got))
-	}
+	laptopSigner := encodeSigner(t, laptop.Public())
+	desktopSigner := encodeSigner(t, desktop.Public())
 
-	f, err := vault.Load(path)
+	meta, err := f.Devices(key)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("Devices: %v", err)
 	}
-	key, err := f.VaultKeyPass("open sesame")
-	if err != nil {
-		t.Fatalf("VaultKeyPass: %v", err)
+	desktopPub := ""
+	for pub, m := range meta {
+		if m.Name == "desktop" {
+			desktopPub = pub
+		}
 	}
-	defer clear(key)
-	if err := f.AddDevice(key, "desktop", newSoftKey(t).Public(), desktop.Public()); err != nil {
-		t.Fatalf("AddDevice: %v", err)
-	}
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("open after blessed add: %v", err)
-	}
-	if got := mustPins(t, path); len(got) != 2 {
-		t.Fatalf("pins after blessed add = %d, want 2", len(got))
+	if desktopPub == "" {
+		t.Fatal("the fixture has no desktop device")
 	}
 
-	if err := f.RemoveDevice("desktop"); err != nil {
-		t.Fatalf("RemoveDevice: %v", err)
-	}
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("open after revocation: %v", err)
-	}
-	if got := mustPins(t, path); len(got) != 1 {
-		t.Fatalf("pins after revocation = %d, want 1", len(got))
-	}
-
+	// While enrolled, desktop's own signature is followed.
+	f.Seq++
 	if err := f.Stamp(desktop); err != nil {
 		t.Fatalf("Stamp: %v", err)
 	}
 	if err := f.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if _, err := openVerified(path); !errors.Is(err, sig.ErrUnknownSigner) {
-		t.Fatalf("open of a vault signed by the revoked device = %v, want ErrUnknownSigner", err)
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("openVerified signed by desktop: %v", err)
+	}
+
+	// Revocation is a registry change signed by a device that stays.
+	if err := f.RemoveDevice(key, desktopPub); err != nil {
+		t.Fatalf("RemoveDevice: %v", err)
+	}
+	f.Seq++
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("openVerified after revocation: %v", err)
+	}
+	if err := record(path, f, key); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	pins, err := loadPins(f.VaultID)
+	if err != nil {
+		t.Fatalf("loadPins: %v", err)
+	}
+	if !slices.Equal(pins.Signers, []string{laptopSigner}) {
+		t.Fatalf("signers after revocation = %v, want only %s", pins.Signers, laptopSigner)
+	}
+	if slices.Contains(pins.Signers, desktopSigner) {
+		t.Fatalf("the revoked device's signing key is still accepted: %v", pins.Signers)
+	}
+
+	// The revoked device's own signature stops being accepted.
+	f.Seq++
+	if err := f.Stamp(desktop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := openVerified(path); !errors.Is(err, errRevoked) {
+		t.Fatalf("openVerified signed by the revoked device = %v, want errRevoked", err)
+	}
+
+	// Re-adding the device is clean, nothing is remembered against it.
+	if err := f.AddDevice(key, "desktop", fixtureDay, newSoftKey(t).Public(), desktop.Public()); err != nil {
+		t.Fatalf("AddDevice: %v", err)
+	}
+	f.Seq++
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("openVerified after re-adding desktop: %v", err)
+	}
+	if err := record(path, f, key); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	pins, err = loadPins(f.VaultID)
+	if err != nil {
+		t.Fatalf("loadPins: %v", err)
+	}
+	signers, err := f.Signers(key)
+	if err != nil {
+		t.Fatalf("Signers: %v", err)
+	}
+	if len(signers) != 2 || !slices.Equal(pins.Signers, signers) {
+		t.Fatalf("signers after re-adding = %v, want exactly the registry %v", pins.Signers, signers)
+	}
+
+	// Desktop's signature is accepted again with no leftover state.
+	f.Seq++
+	if err := f.Stamp(desktop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := openVerified(path); err != nil {
+		t.Fatalf("openVerified signed by the re-added desktop: %v", err)
 	}
 }
 
-func TestSingleLineName(t *testing.T) {
+// TestProveKeyRefusesForeignWraps covers a stitched file: the recovery wrap
+// and this machine's device wrap have to agree on one vault key, so a wrap
+// taken from anywhere else is a refusal rather than a pass.
+func TestProveKeyRefusesForeignWraps(t *testing.T) {
+	dk := newSoftKey(t)
+	f, err := vault.New(dk, "open sesame", "laptop", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("vault.New: %v", err)
+	}
+	mine := vault.Pub(dk.Public())
+
+	if err := proveKey(f, "open sesame", dk); err != nil {
+		t.Fatalf("proveKey on the honest file: %v", err)
+	}
+	if err := proveKey(f, "wrong passphrase", dk); err == nil {
+		t.Fatal("proveKey accepted the wrong recovery passphrase")
+	}
+	// Not enrolled here, so the recovery wrap is the only proof available.
+	if err := proveKey(f, "open sesame", nil); err != nil {
+		t.Fatalf("proveKey without a device key: %v", err)
+	}
+
+	// Another machine's wrap, sealed to a key this device does not hold.
+	other := newSoftKey(t)
+	stranger, err := vault.New(other, "open sesame", "desktop", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("vault.New stranger: %v", err)
+	}
+	f.Device[mine] = stranger.Device[vault.Pub(other.Public())]
+	if err := proveKey(f, "open sesame", dk); err == nil {
+		t.Fatal("proveKey accepted another device's wrap")
+	}
+
+	// This device's wrap from a different vault: both wraps open, but to
+	// different vault keys.
+	clone, err := vault.New(dk, "open sesame", "laptop", newSoftSigner(t).Public())
+	if err != nil {
+		t.Fatalf("vault.New clone: %v", err)
+	}
+	f.Device[mine] = clone.Device[mine]
+	if err := proveKey(f, "open sesame", dk); err == nil {
+		t.Fatal("proveKey accepted a device wrap stitched in from another vault")
+	}
+}
+
+// TestSignAndSaveKeepsVaultLoadable is the write path end to end: a mutation
+// saved through signAndSave loads and verifies afterwards. The signing key
+// lives in the TPM, so this runs only where one is available.
+func TestSignAndSaveKeepsVaultLoadable(t *testing.T) {
+	if err := devkey.Available(); err != nil {
+		t.Skipf("no TPM on this machine: %v", err)
+	}
+	path := isolatePins(t)
+
+	sk, err := devkey.OpenSigning()
+	if err != nil {
+		t.Fatalf("OpenSigning: %v", err)
+	}
+	t.Cleanup(func() { _ = sk.Close() })
+
+	f, err := vault.New(newSoftKey(t), "open sesame", "laptop", sk.Public())
+	if err != nil {
+		t.Fatalf("vault.New: %v", err)
+	}
+	key, err := f.VaultKeyPass("open sesame")
+	if err != nil {
+		t.Fatalf("VaultKeyPass: %v", err)
+	}
+	t.Cleanup(func() { clear(key) })
+
+	if err := f.Set(key, "API_KEY", []byte("s3cret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := signAndSave(f, key, path); err != nil {
+		t.Fatalf("signAndSave: %v", err)
+	}
+
+	got, err := openVerified(path)
+	if err != nil {
+		t.Fatalf("openVerified after signAndSave: %v", err)
+	}
+	value, err := got.Get(key, "API_KEY")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(value) != "s3cret" {
+		t.Fatalf("Get = %q, want %q", value, "s3cret")
+	}
+	clear(value)
+}
+
+func TestPresent(t *testing.T) {
 	cases := []struct {
 		name string
-		want bool
+		err  error
+		want string
 	}{
-		{"shop", true},
-		{"shop-2", true},
-		{"shop.x", true},
-		{"", false},
-		{"foo\nPROMPT_COMMAND = \"evil\"", false},
-		{"foo\rBAR = \"evil\"", false},
-		{"foo\vbaz", false},
-		{"foo\tbaz", false},
-		{"my shop", true},
-		{"foo\u2028baz", false},
+		{
+			name: "context prefixes drop",
+			err:  fmt.Errorf("unlock: %w", fmt.Errorf("vault: verify: %w", sig.ErrUnknownSigner)),
+			want: "signer is not among the accepted public keys",
+		},
+		{
+			name: "a hint appended to the wrapped message stays",
+			err: fmt.Errorf("open: %w", fmt.Errorf(
+				"%w, if this is really yours run fuu trust here",
+				errUnaccepted,
+			)),
+			want: "this vault has not been accepted on this machine, if this is really yours run fuu trust here",
+		},
+		{
+			name: "suffix after the sentinel stays",
+			err:  fmt.Errorf("%w %q", vault.ErrNoDevice, "laptop"),
+			want: `no such device "laptop"`,
+		},
 	}
 	for _, tc := range cases {
-		if got := singleLineName(tc.name); got != tc.want {
-			t.Errorf("singleLineName(%q) = %v, want %v", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := present(tc.err); got != tc.want {
+				t.Fatalf("present = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -265,283 +576,56 @@ func TestLockVaultBlocks(t *testing.T) {
 	}
 }
 
-func TestTrustVaultAcceptsUnsigned(t *testing.T) {
-	path := isolatePins(t)
-	writeVault(t, path, true)
+// TestMintPassphrase covers the default path: whatever fuu generates clears
+// its own floor, stays inside the base32 alphabet and never repeats.
+func TestMintPassphrase(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	f.Sig, f.Signer = "", ""
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	if err := trustVault(path, "open sesame", newSoftKey(t)); err != nil {
-		t.Fatalf("trustVault: %v", err)
-	}
-	registry := registrySigners(f)
-	if len(registry) != 2 {
-		t.Fatalf("registry has %d signers, want 2", len(registry))
-	}
-	if got := mustPins(t, path); !slices.Equal(got, registry) {
-		t.Fatalf("pins = %v, want %v", got, registry)
-	}
-}
-
-// TestTrustVaultRejectsTampered covers the self inconsistent vault: the device
-// registry changed but the signature is still the old one. Nothing about the
-// file can be verified, so nothing gets pinned.
-func TestTrustVaultRejectsTampered(t *testing.T) {
-	path := isolatePins(t)
-	writeVault(t, path, true)
-
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	d := f.Device["laptop"]
-	d.Wrap = "tampered"
-	f.Device["laptop"] = d
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	if err := trustVault(path, "open sesame", newSoftKey(t)); !errors.Is(err, sig.ErrUnverified) {
-		t.Fatalf("trustVault = %v, want ErrUnverified", err)
-	}
-	if got := mustPins(t, path); len(got) != 0 {
-		t.Fatalf("pins = %v after a tampered vault, want none", got)
-	}
-}
-
-func TestCheckBless(t *testing.T) {
-	path := isolatePins(t)
-	writeVault(t, path, true)
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	registry := registrySigners(f)
-
-	cases := []struct {
-		name    string
-		pins    []string
-		wantErr bool
-	}{
-		{"no pins", nil, false},
-		{"pins match the registry", registry, false},
-		{"pins missing one entry", registry[:1], true},
-		{"foreign pins", []string{"foreign"}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := checkBless(f, pinFile{Signers: tc.pins})
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("checkBless(%v) = %v, want error %v", tc.pins, err, tc.wantErr)
+	seen := make(map[string]struct{}, 200)
+	for range 200 {
+		pass, err := mintPassphrase()
+		if err != nil {
+			t.Fatalf("mintPassphrase: %v", err)
+		}
+		if err := checkPassphrase(pass); err != nil {
+			t.Fatalf("generated %q does not clear its own floor: %v", pass, err)
+		}
+		for _, r := range pass {
+			if !strings.ContainsRune(alphabet, r) {
+				t.Fatalf("generated %q holds %q, outside the base32 alphabet", pass, r)
 			}
-		})
-	}
-}
-
-func TestPresent(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{
-			name: "chain keeps the sentence and the hint",
-			err:  trustHint(fmt.Errorf("vault: verify: %w", sig.ErrUnknownSigner)),
-			want: "signer is not among the accepted public keys\nif you knowingly replaced the vault run fuu trust, otherwise this file is not what it claims to be",
-		},
-		{
-			name: "chain keeps the sentence",
-			err:  fmt.Errorf("vault: verify: %w", sig.ErrUnverified),
-			want: "signature does not verify over the payload",
-		},
-		{
-			name: "suffix after the sentinel stays",
-			err:  fmt.Errorf("%w %q", vault.ErrNoDevice, "laptop"),
-			want: `no such device "laptop"`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := present(tc.err); got != tc.want {
-				t.Fatalf("present = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestCheckBlessRefusesRevoked(t *testing.T) {
-	path := isolatePins(t)
-	writeVault(t, path, true)
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	registry := registrySigners(f)
-	pins := pinFile{Signers: registry, Revoked: registry[:1]}
-	if err := checkBless(f, pins); !errors.Is(err, errRevokedSigner) {
-		t.Fatalf("checkBless = %v, want errRevokedSigner", err)
-	}
-}
-
-// TestRevokedSignerCannotReturnViaReplay is the regression test for the replay
-// attack: a revoked device comes back through a pre-revocation copy of the
-// file, and its signing key then signs again with local approval.
-func TestRevokedSignerCannotReturnViaReplay(t *testing.T) {
-	path := isolatePins(t)
-	laptop, _ := writeVault(t, path, true)
-
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("first open: %v", err)
-	}
-	replay, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	desktopPub := f.Device["desktop"].SignPub
-	if err := f.RemoveDevice("desktop"); err != nil {
-		t.Fatalf("RemoveDevice: %v", err)
-	}
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("open after revocation: %v", err)
-	}
-	pins, err := loadPins(path)
-	if err != nil {
-		t.Fatalf("loadPins: %v", err)
-	}
-	if !slices.Contains(pins.Revoked, desktopPub) {
-		t.Fatalf("revoked = %v, want it to carry %s", pins.Revoked, desktopPub)
-	}
-
-	if err := os.WriteFile(path, replay, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if _, err := openVerified(path); !errors.Is(err, errRevokedSigner) {
-		t.Fatalf("open of the replayed vault = %v, want errRevokedSigner", err)
-	}
-}
-
-func TestTrustVaultForgetsRevoked(t *testing.T) {
-	path := isolatePins(t)
-	laptop, _ := writeVault(t, path, true)
-
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("first open: %v", err)
-	}
-	f, err := vault.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if err := f.RemoveDevice("desktop"); err != nil {
-		t.Fatalf("RemoveDevice: %v", err)
-	}
-	if err := f.Stamp(laptop); err != nil {
-		t.Fatalf("Stamp: %v", err)
-	}
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if _, err := openVerified(path); err != nil {
-		t.Fatalf("open after revocation: %v", err)
-	}
-
-	if err := trustVault(path, "open sesame", newSoftKey(t)); err != nil {
-		t.Fatalf("trustVault: %v", err)
-	}
-	pins, err := loadPins(path)
-	if err != nil {
-		t.Fatalf("loadPins: %v", err)
-	}
-	if len(pins.Revoked) != 0 {
-		t.Fatalf("revoked = %v after fuu trust, want none", pins.Revoked)
-	}
-}
-
-func TestProveKey(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := vault.New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	if err := proveKey(f, "open sesame", dk); err != nil {
-		t.Fatalf("proveKey: %v", err)
-	}
-	if err := proveKey(f, "wrong", dk); err == nil {
-		t.Fatal("proveKey accepted the wrong passphrase")
-	}
-	// Not being a device here leaves the recovery wrap as the only proof.
-	if err := proveKey(f, "open sesame", newSoftKey(t)); err != nil {
-		t.Fatalf("proveKey from a stranger: %v", err)
-	}
-}
-
-// TestProveKeyRejectsStitchedWraps covers the bless attack: a replaced vault
-// whose recovery wrap holds one vault key and whose device wrap another. No
-// attacker without the recovery passphrase can build a consistent pair.
-func TestProveKeyRejectsStitchedWraps(t *testing.T) {
-	dk := newSoftKey(t)
-	f, err := vault.New(dk, "laptop", "open sesame", newSoftSigner(t).Public())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	stitch, err := seal.WrapPassphrase("open sesame", bytes.Repeat([]byte{0x42}, 32))
-	if err != nil {
-		t.Fatalf("WrapPassphrase: %v", err)
-	}
-	f.Recovery = vault.Recovery{
-		KDF:  stitch.KDF,
-		Salt: stitch.Salt,
-		Mem:  stitch.Mem,
-		Time: stitch.Time,
-		Wrap: stitch.Body,
-	}
-
-	if err := proveKey(f, "open sesame", dk); err == nil {
-		t.Fatal("proveKey accepted stitched wraps")
-	}
-}
-
-func TestParseValuesGuards(t *testing.T) {
-	if _, err := parseValues([]byte(`X = "a\u0000b"` + "\n")); err == nil {
-		t.Fatal("parseValues accepted a NUL byte")
-	}
-	values, err := parseValues([]byte("PROMPT_COMMAND = \"x\"\n"))
-	if err != nil {
-		t.Fatalf("parseValues: %v", err)
-	}
-	if _, ok := values["PROMPT_COMMAND"]; !ok {
-		t.Fatal("a hazard name is storable, only the hook keeps it out of the shell")
+		}
+		if _, dup := seen[pass]; dup {
+			t.Fatalf("generated %q twice in 200 draws", pass)
+		}
+		seen[pass] = struct{}{}
 	}
 }
 
 func TestCheckPassphrase(t *testing.T) {
-	if err := checkPassphrase("short"); err == nil {
-		t.Fatal("checkPassphrase accepted 5 characters")
+	cases := []struct {
+		name       string
+		passphrase string
+		wantOK     bool
+	}{
+		{"short", "short", false},
+		{"whitespace only", "                    ", false},
+		{"old floor", "12 chars long", false},
+		{"long enough", "correct horse battery staple", true},
+		{"one character run", "aaaaaaaaaaaaaaaaaaaa", false},
+		{"two character run", "abababababababababab", false},
+		{"padded to look long", "          short", false},
+		{"exactly at the floor", "abcdefghij klmnopqrs", true},
 	}
-	if err := checkPassphrase("            "); err == nil {
-		t.Fatal("checkPassphrase accepted whitespace only")
-	}
-	if err := checkPassphrase("12 chars long"); err != nil {
-		t.Fatalf("checkPassphrase: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkPassphrase(tc.passphrase)
+			if tc.wantOK && err != nil {
+				t.Fatalf("checkPassphrase(%q) = %v, want it accepted", tc.passphrase, err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatalf("checkPassphrase(%q) accepted it", tc.passphrase)
+			}
+		})
 	}
 }

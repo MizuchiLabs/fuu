@@ -18,8 +18,8 @@ var (
 
 	vaultFlag = &cli.StringFlag{
 		Name:    "vault",
-		Usage:   "path to the vault file",
-		Value:   "fuu.toml",
+		Usage:   "path to the vault file, otherwise the nearest fuu.toml in this repository",
+		Value:   "",
 		Sources: cli.EnvVars("FUU_VAULT"),
 	}
 )
@@ -27,20 +27,24 @@ var (
 var commands = []*cli.Command{
 	{
 		Name:   "doctor",
-		Usage:  "report TPM status and this machine's device key",
+		Usage:  "report TPM status and what this machine is enrolled in",
 		Action: cmdDoctor,
 	},
 	{
 		Name:   "init",
-		Usage:  "create a vault with a fresh key sealed to this machine",
+		Usage:  "create a vault in this repository and enroll this machine",
 		Action: cmdInit,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"},
+			&cli.BoolFlag{
+				Name:  "prompt",
+				Usage: "ask for the recovery passphrase instead of generating one",
+			},
 		},
 	},
 	{
 		Name:   "join",
-		Usage:  "enroll this machine using the recovery passphrase",
+		Usage:  "accept this vault and enroll this machine using the recovery passphrase",
 		Action: cmdJoin,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"},
@@ -82,57 +86,52 @@ var commands = []*cli.Command{
 	{
 		Name:      "set",
 		Usage:     "set a secret value",
-		ArgsUsage: "<project>:<KEY> [value]",
+		ArgsUsage: "<KEY> [value]",
 		Action:    cmdSet,
 	},
 	{
 		Name:      "unset",
 		Usage:     "delete a secret value",
-		ArgsUsage: "<project>:<KEY>",
+		ArgsUsage: "<KEY>",
 		Action:    cmdUnset,
 	},
 	{
 		Name:      "get",
 		Usage:     "print one secret value",
-		ArgsUsage: "<project>:<KEY>",
+		ArgsUsage: "<KEY>",
 		Action:    cmdGet,
 	},
 	{
-		Name:      "edit",
-		Usage:     "edit one project's secrets in your editor",
-		ArgsUsage: "[project]",
-		Action:    cmdEdit,
+		Name:   "edit",
+		Usage:  "edit this vault's secrets in your editor",
+		Action: cmdEdit,
 	},
 	{
-		Name:      "ls",
-		Usage:     "list projects, or the keys in one project",
-		ArgsUsage: "[project]",
-		Action:    cmdLs,
+		Name:   "ls",
+		Usage:  "list the keys in this vault",
+		Action: cmdLs,
 	},
 	{
-		Name:      "print",
-		Usage:     "print export lines for one project",
-		ArgsUsage: "<project>",
-		Flags:     []cli.Flag{shellFlag},
-		Action:    cmdPrint,
+		Name:   "print",
+		Usage:  "print export lines for this vault",
+		Flags:  []cli.Flag{shellFlag},
+		Action: cmdPrint,
 	},
 	{
-		Name:      "env",
-		Usage:     "print shell lines loading the project for the current directory",
-		ArgsUsage: "[project]",
-		Flags:     []cli.Flag{shellFlag},
-		Action:    cmdEnv,
+		Name:   "env",
+		Usage:  "print shell lines loading the vault for the current directory",
+		Flags:  []cli.Flag{shellFlag},
+		Action: cmdEnv,
 	},
 	{
-		Name:      "hook",
-		Usage:     "print the shell hook that keeps your shell's secrets up to date",
-		ArgsUsage: "<bash|zsh|fish>",
-		Action:    cmdHook,
+		Name:   "hook",
+		Usage:  "print the shell hook that keeps your shell's secrets up to date",
+		Action: cmdHook,
 	},
 	{
 		Name:            "run",
-		Usage:           "run a command with one project's secrets in its environment",
-		ArgsUsage:       "<project> <command> [args...]",
+		Usage:           "run a command with this vault's secrets in its environment",
+		ArgsUsage:       "<command> [args...]",
 		SkipFlagParsing: true,
 		Action:          cmdRun,
 	},
@@ -140,20 +139,21 @@ var commands = []*cli.Command{
 		Name:   "rotate",
 		Usage:  "replace the vault key and rewrap everything",
 		Action: cmdRotate,
-	},
-	{
-		Name:   "sign",
-		Usage:  "stamp the vault contents with this machine's signing key",
-		Action: cmdSign,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "prompt",
+				Usage: "ask for the recovery passphrase instead of generating one",
+			},
+		},
 	},
 	{
 		Name:   "verify",
-		Usage:  "check the vault signature and print the signing device",
+		Usage:  "check the vault signature and what is trusted here",
 		Action: cmdVerify,
 	},
 	{
 		Name:   "trust",
-		Usage:  "pin the vault's current signers here, after knowingly replacing the vault",
+		Usage:  "accept this vault here, after a join or a replacement",
 		Action: cmdTrust,
 	},
 }
