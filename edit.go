@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
@@ -103,8 +104,15 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+// editBufMaxAge is how long a leftover edit buffer may sit before the next
+// edit sweeps it. A younger buffer may belong to an editor still open in
+// another window, and deleting one out from under it loses that edit, so only
+// buffers clearly abandoned by a force killed editor are touched.
+const editBufMaxAge = 24 * time.Hour
+
 // sweepEditBufs removes buffers left behind by a force killed editor, they
-// hold the vault's secrets in plaintext in a world readable folder.
+// hold the vault's secrets in plaintext. A buffer younger than editBufMaxAge
+// is left alone, it may belong to an editor running right now.
 func sweepEditBufs() {
 	tmp := os.TempDir()
 	entries, err := os.ReadDir(tmp)
@@ -112,9 +120,17 @@ func sweepEditBufs() {
 		return
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "fuu-editbuf-") {
-			_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
+		if !strings.HasPrefix(entry.Name(), "fuu-editbuf-") {
+			continue
 		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if time.Since(info.ModTime()) < editBufMaxAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
 	}
 }
 
