@@ -27,7 +27,6 @@ builds:
       - -X github.com/mizuchilabs/kata/buildinfo.Date={{ .CommitDate }}
     goos:
       - linux
-      - darwin
       - windows
     goarch:
       - amd64
