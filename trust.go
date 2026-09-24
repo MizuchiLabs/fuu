@@ -40,7 +40,17 @@ var (
 	errUntrusted  = errors.New("this folder is not one this machine loads that vault from")
 	errStale      = errors.New("this vault is older than what this machine has already seen")
 	errRevoked    = errors.New("signing key is not accepted on this machine")
+	errAborted    = errors.New("aborted, nothing recorded")
 )
+
+// stale reports whether a copy is behind or forks what this machine has already
+// accepted: different bytes at a write counter it has counted past or met. A
+// copy already accepted as is is never stale, and neither is a step forward.
+// The load refusal and the accept time rollback warning both key off this, so
+// the two cannot drift apart.
+func stale(seq uint64, digest string, pins pinFile) bool {
+	return digest != pins.LastDigest && seq <= pins.LastSeq
+}
 
 // verifyPinned checks the file against what this machine already accepted:
 // a signature from a key it trusts, at a folder it loads from, and a write
@@ -90,7 +100,7 @@ func verifyPinned(path string, f *vault.File) error {
 	// A copy of the file this machine has already accepted is always fine.
 	// Anything else has to be a step forward, which is what makes a rolled
 	// back or forked copy refuse to load instead of quietly winning.
-	if f.Digest() != pins.LastDigest && f.Seq <= pins.LastSeq {
+	if stale(f.Seq, f.Digest(), pins) {
 		return fmt.Errorf(
 			"%w, this copy is at write %d and this machine is at %d. If that is what you want run fuu trust here",
 			errStale,

@@ -168,6 +168,10 @@ func cmdJoin(_ context.Context, cmd *cli.Command) error {
 	}
 	defer clear(key)
 
+	if err := confirmAccept(f, key, "enroll this machine into this vault"); err != nil {
+		return err
+	}
+
 	dk, err := devkey.Open()
 	if err != nil {
 		return err

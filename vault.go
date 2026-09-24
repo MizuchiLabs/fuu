@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 
 	"github.com/urfave/cli/v3"
@@ -54,15 +55,8 @@ func cmdTrust(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if err := showVault(f, key); err != nil {
+	if err := confirmAccept(f, key, "accept this vault here"); err != nil {
 		return err
-	}
-	ok, err := confirm("accept this vault here")
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errors.New("trust: aborted, nothing recorded")
 	}
 
 	if err := trustVault(path, f, key); err != nil {
@@ -103,6 +97,51 @@ func showVault(f *vault.File, key []byte) error {
 		}
 	}
 	fmt.Printf("last write signed by %s\n", signer)
+	return nil
+}
+
+// warnRollback screams when accepting f would move this machine's rollback
+// protection backwards: a copy behind the write counter it has counted past, or
+// a different state at a write it has already seen. It reads only the write
+// counter and the pin record, so it runs before any prompt or mutation.
+// Accepting stays allowed, recovering from an accidental untrust is the
+// operator's call, but an attempted rollback is loud rather than silent.
+func warnRollback(f *vault.File) {
+	pins, err := loadPins(f.VaultID)
+	if err != nil || len(pins.Signers) == 0 {
+		return
+	}
+	if !stale(f.Seq, f.Digest(), pins) {
+		return
+	}
+	fmt.Fprintf(
+		os.Stderr,
+		"\nWARNING: this vault is at write %d but this machine already accepted write %d\n",
+		f.Seq,
+		pins.LastSeq,
+	)
+	fmt.Fprintln(os.Stderr, "  accepting it moves rollback protection backwards and re-trusts the")
+	fmt.Fprintln(os.Stderr, "  signing keys carried by that older file. if you did not put this copy")
+	fmt.Fprintln(os.Stderr, "  here yourself, someone may be trying to roll you back.")
+	fmt.Fprintln(os.Stderr, "  ctrl-c to abort, confirm below only if this is what you want")
+	fmt.Fprintln(os.Stderr)
+}
+
+// confirmAccept shows what is about to be accepted and asks for a typed yes. It
+// is the gate in front of granting trust, so it warns when the file is a
+// rollback before asking. Both fuu trust and fuu join go through here.
+func confirmAccept(f *vault.File, key []byte, action string) error {
+	if err := showVault(f, key); err != nil {
+		return err
+	}
+	warnRollback(f)
+	ok, err := confirm(action)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errAborted
+	}
 	return nil
 }
 

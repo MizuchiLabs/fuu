@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -105,6 +106,30 @@ func encodeSigner(t *testing.T, pub *ecdsa.PublicKey) string {
 		t.Fatalf("EncodeSigner: %v", err)
 	}
 	return signer
+}
+
+// captureStderr swaps the process stderr for a pipe while f runs, so a test can
+// read back what warnRollback prints at the operator.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w                      //nolint:reassign // capturing what warnRollback prints
+	defer func() { os.Stderr = old }() //nolint:reassign // restoring after the capture
+
+	f()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out)
 }
 
 // TestTrustKeepsOtherFoldersAccepted covers a regression where accepting a
@@ -258,6 +283,67 @@ func TestStaleWriteCounterRefused(t *testing.T) {
 		if _, err := openVerified(path); err != nil {
 			t.Fatalf("openVerified of the current bytes: %v", err)
 		}
+	}
+}
+
+// TestWarnRollbackOnOlderCopy is the attack signal: accepting a copy behind the
+// write counter this machine has already counted past warns loudly, while the
+// accepted state stays quiet. Recovering is still allowed, the warning is what
+// makes a rollback visible instead of silent.
+func TestWarnRollbackOnOlderCopy(t *testing.T) {
+	path := isolatePins(t)
+	f, key, laptop, _ := writeVault(t, path, false)
+
+	if err := trustVault(path, f, key); err != nil {
+		t.Fatalf("trustVault: %v", err)
+	}
+	older, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Move this machine forward one write.
+	if err := f.Set(key, "API_KEY", []byte("s3cret")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.Seq++
+	if err := f.Stamp(laptop); err != nil {
+		t.Fatalf("Stamp: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := record(path, f, key); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// The copy this machine already accepted stays quiet.
+	if err := os.WriteFile(path, current, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fCur, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := captureStderr(t, func() { warnRollback(fCur) }); got != "" {
+		t.Fatalf("warnRollback on the current copy printed %q, want silence", got)
+	}
+
+	// An older copy is a rollback, it warns before anyone can accept it.
+	if err := os.WriteFile(path, older, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fOld, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := captureStderr(t, func() { warnRollback(fOld) })
+	if !strings.Contains(got, "WARNING") || !strings.Contains(got, "roll you back") {
+		t.Fatalf("warnRollback on an older copy printed %q, want a rollback warning", got)
 	}
 }
 
