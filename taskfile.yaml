@@ -30,7 +30,8 @@ tasks:
   build:
     desc: Build binary
     cmds:
-      - go build -ldflags="-s -w" -trimpath -o fuu
+      - mkdir -p ~/.local/bin
+      - CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o ~/.local/bin/
 
   snapshot:
     desc: Build snapshot

@@ -69,12 +69,14 @@ only what changed when you save and close.
 	DATABASE_URL = "postgres://localhost/mydb"
 
 Change a value, add a line to add a key, delete a line to drop a key. Keys you
-leave alone are not re-encrypted so they do not churn in git.
+leave alone are not re-encrypted so they do not churn in git. Any shell with the
+hook picks up what you saved at its next prompt, no cd needed.
 
 The buffer is plaintext in a private temporary directory that is removed when
 the editor closes, swap and backup copies included. Nothing is written if the
-TOML is invalid, if the buffer would drop every key, or if a key name is not a
-valid shell variable name.
+TOML is invalid or if a key name is not a valid shell variable name. Clearing
+the buffer is allowed, but only after a confirmation, since an empty buffer is
+more often a botched edit than an intention.
 
 Values with newlines or quotes round trip exactly, the buffer is TOML so
 escaping is the library's problem rather than yours. To store one from a file,

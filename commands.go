@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -24,16 +25,14 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// hookBash and hookZsh only ever call back into fuu env. Nothing from a repo is
-// executed, so there is no allow gate to manage. Re-run the eval by hand after
-// editing the vault from another shell.
+// The hooks only ever call back into fuu env. Nothing from a repo is executed,
+// so there is no allow gate to manage. They run before every prompt and fuu env
+// says nothing while the shell already holds the current state, so a change
+// saved from anywhere, including fuu edit in another window, lands without a cd.
 const hookBash = `# fuu, add to .bashrc:  eval "$(fuu hook bash)"
 _fuu_hook() {
 	local previous_exit_status=$?
-	if [ "$PWD" != "${_FUU_DIR-}" ]; then
-		_FUU_DIR=$PWD
-		eval "$(command fuu env)"
-	fi
+	eval "$(command fuu env)"
 	return $previous_exit_status
 }
 if ! [[ "${PROMPT_COMMAND-}" =~ _fuu_hook ]]; then
@@ -43,24 +42,19 @@ _fuu_hook
 `
 
 const hookFish = `# fuu, add to config.fish:  fuu hook fish | source
-function _fuu_hook --on-variable PWD
-	if test "$PWD" != "$_FUU_DIR"
-		set -g _FUU_DIR "$PWD"
-		command fuu env --shell=fish | source
-	end
+function _fuu_hook --on-variable PWD --on-event fish_prompt
+	command fuu env --shell=fish | source
 end
 _fuu_hook
 `
 
 const hookZsh = `# fuu, add to .zshrc:  eval "$(fuu hook zsh)"
 _fuu_hook() {
-	if [ "$PWD" != "${_FUU_DIR-}" ]; then
-		_FUU_DIR=$PWD
-		eval "$(command fuu env)"
-	fi
+	eval "$(command fuu env)"
 }
 autoload -Uz add-zsh-hook
 add-zsh-hook chpwd _fuu_hook
+add-zsh-hook precmd _fuu_hook
 _fuu_hook
 `
 
@@ -182,7 +176,7 @@ var commands = []*cli.Command{
 	},
 	{
 		Name:      "hook",
-		Usage:     "print the shell hook that loads secrets when you cd",
+		Usage:     "print the shell hook that keeps your shell's secrets up to date",
 		ArgsUsage: "<bash|zsh>",
 		Action:    cmdHook,
 	},
@@ -567,9 +561,16 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// An empty buffer is far more likely a botched edit than a real intention.
+	// An empty buffer is far more likely a botched edit than a real intention,
+	// so dropping every key takes one extra word instead of being refused.
 	if len(edited) == 0 && len(before) > 0 {
-		return errors.New("edit: that would drop every key, nothing written")
+		ok, err := confirm(fmt.Sprintf("drop every key in %q", project))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("edit: aborted, nothing written")
+		}
 	}
 
 	fresh, err := vault.Load(path)
@@ -959,14 +960,14 @@ func (e emitter) unload(loaded []string) {
 	for _, name := range loaded {
 		e.unset(name)
 	}
-	if len(loaded) == 0 && os.Getenv("FUU_PROJECT") == "" {
+	if len(loaded) == 0 && os.Getenv("FUU_PROJECT") == "" && os.Getenv("FUU_STAMP") == "" {
 		return
 	}
 	if e.fish {
-		fmt.Println("set -e FUU_LOADED FUU_PROJECT")
+		fmt.Println("set -e FUU_LOADED FUU_PROJECT FUU_STAMP")
 		return
 	}
-	fmt.Println("unset FUU_LOADED FUU_PROJECT")
+	fmt.Println("unset FUU_LOADED FUU_PROJECT FUU_STAMP")
 }
 
 func cmdHook(_ context.Context, cmd *cli.Command) error {
@@ -1004,8 +1005,19 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	path := cmd.String("vault")
+	stamp, err := vaultStamp(path)
+	if err != nil {
+		return err
+	}
+	// The hook runs this before every prompt, so say nothing while the shell
+	// already holds exactly this state and nothing needs unsealing.
+	if os.Getenv("FUU_STAMP") == stamp && os.Getenv("FUU_PROJECT") == project {
+		return nil
+	}
+
 	loaded := strings.Fields(os.Getenv("FUU_LOADED"))
-	f, err := vault.Load(cmd.String("vault"))
+	f, err := vault.Load(path)
 	if errors.Is(err, os.ErrNotExist) {
 		out.unload(loaded)
 		return nil
@@ -1048,15 +1060,29 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	}
 	out.export("FUU_LOADED", strings.Join(names, " "))
 	out.export("FUU_PROJECT", project)
+	out.export("FUU_STAMP", stamp)
 	return nil
 }
 
-func prompt(label string, confirm bool) (string, error) {
+// vaultStamp fingerprints the vault bytes so a shell can tell it is already
+// current without unsealing anything.
+func vaultStamp(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("env: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func prompt(label string, repeat bool) (string, error) {
 	first, err := readSecret(label)
 	if err != nil {
 		return "", err
 	}
-	if !confirm {
+	if !repeat {
 		return first, nil
 	}
 
@@ -1068,6 +1094,20 @@ func prompt(label string, confirm bool) (string, error) {
 		return "", errors.New("prompt: entries do not match")
 	}
 	return first, nil
+}
+
+// confirm takes one visible line, since the answer is not a secret. Anything
+// but a plain yes means no.
+func confirm(label string) (bool, error) {
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", label)
+	defer fmt.Fprintln(os.Stderr)
+
+	line, err := stdin.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("prompt: %w", err)
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }
 
 // readSecret hides the input on a terminal and takes a plain line when stdin
