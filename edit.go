@@ -68,15 +68,20 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	var wrote, dropped []string
+	var changed, added, dropped []string
 	for _, name := range slices.Sorted(maps.Keys(edited)) {
-		if old, ok := before[name]; ok && old == edited[name] {
+		old, ok := before[name]
+		if ok && old == edited[name] {
 			continue
 		}
 		if err := f.Set(key, name, []byte(edited[name])); err != nil {
 			return err
 		}
-		wrote = append(wrote, name)
+		if ok {
+			changed = append(changed, name)
+		} else {
+			added = append(added, name)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(before)) {
 		if _, ok := edited[name]; ok {
@@ -88,18 +93,17 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		dropped = append(dropped, name)
 	}
 
-	if len(wrote) == 0 && len(dropped) == 0 {
+	if len(changed) == 0 && len(added) == 0 && len(dropped) == 0 {
 		fmt.Println("no changes")
 		return nil
 	}
 	if err := signAndSave(f, key, path); err != nil {
 		return err
 	}
-	for _, name := range wrote {
+	// Names entering or leaving the shell belong to the hook, which names
+	// them at the next prompt. Only a moved value has no other speaker.
+	for _, name := range changed {
 		fmt.Println("~", name)
-	}
-	for _, name := range dropped {
-		fmt.Println("-", name)
 	}
 	return nil
 }
