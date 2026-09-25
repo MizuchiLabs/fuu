@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -21,13 +23,14 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 	}
 
 	var value string
-	if cmd.Args().Len() > 1 {
+	switch {
+	case cmd.Args().Len() > 1:
 		value = cmd.Args().Get(1)
 		fmt.Fprintln(
 			os.Stderr,
 			"set: a value on the command line stays in the process list and shell history, pipe it or leave it out to be prompted",
 		)
-	} else if !term.IsTerminal(int(os.Stdin.Fd())) {
+	case !term.IsTerminal(int(os.Stdin.Fd())):
 		// A piped value keeps newlines and leading dashes, which argv cannot do
 		// since anything starting with a dash reads as a flag.
 		all, err := io.ReadAll(stdin)
@@ -35,37 +38,20 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("set: %w", err)
 		}
 		value = strings.TrimSuffix(strings.TrimSuffix(string(all), "\n"), "\r")
-	} else if value, err = prompt("value", false); err != nil {
-		return err
-	}
-	if strings.ContainsRune(value, 0) {
-		return errors.New("set: values cannot contain NUL bytes, the shell would drop them")
-	}
-	if shellHazard(name) {
-		fmt.Fprintf(os.Stderr, "set: %q configures the shell itself, the hook keeps it out of your shell\n", name)
+	default:
+		if value, err = prompt("value"); err != nil {
+			return err
+		}
 	}
 
-	path, err := vaultPath(cmd)
+	path, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	release, err := lockVault(path)
-	if err != nil {
+	if err := f.Set(key, name, value); err != nil {
 		return err
 	}
-	defer release()
-
-	f, dk, key, err := unlock(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	if err := f.Set(key, name, []byte(value)); err != nil {
-		return err
-	}
-	return signAndSave(f, key, path)
+	return f.Save(path)
 }
 
 func cmdUnset(_ context.Context, cmd *cli.Command) error {
@@ -74,27 +60,14 @@ func cmdUnset(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	path, err := vaultPath(cmd)
+	path, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	release, err := lockVault(path)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	f, dk, key, err := unlock(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
 	if err := f.Unset(key, name); err != nil {
 		return err
 	}
-	return signAndSave(f, key, path)
+	return f.Save(path)
 }
 
 func cmdGet(_ context.Context, cmd *cli.Command) error {
@@ -103,40 +76,37 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	f, dk, key, err := unlock(cmd)
+	_, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	value, err := f.Get(key, name)
+	values, err := f.Secrets(key)
 	if err != nil {
 		return err
 	}
-	out := string(value)
+	value, ok := values[name]
+	if !ok {
+		return fmt.Errorf("%w %q", vault.ErrNoKey, name)
+	}
 	// Pipes and redirects get the exact bytes. A terminal gets a newline too
 	// so the prompt keeps its own line.
-	if term.IsTerminal(int(os.Stdout.Fd())) && !strings.HasSuffix(out, "\n") {
-		out += "\n"
+	if term.IsTerminal(int(os.Stdout.Fd())) && !strings.HasSuffix(value, "\n") {
+		value += "\n"
 	}
-	fmt.Print(out)
-	clear(value)
+	fmt.Print(value)
 	return nil
 }
 
 func cmdLs(_ context.Context, cmd *cli.Command) error {
-	f, dk, key, err := unlock(cmd)
+	_, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	names, err := f.Names(key)
+	values, err := f.Secrets(key)
 	if err != nil {
 		return err
 	}
+	names := slices.Sorted(maps.Keys(values))
 	for _, name := range names {
 		fmt.Println(name)
 	}

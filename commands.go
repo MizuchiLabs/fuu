@@ -12,8 +12,8 @@ var (
 
 	shellFlag = &cli.StringFlag{
 		Name:  "shell",
-		Usage: "output format, posix or fish, defaults to fish inside fish",
-		Value: "",
+		Usage: "output format, posix or fish",
+		Value: "posix",
 	}
 
 	vaultFlag = &cli.StringFlag{
@@ -26,62 +26,16 @@ var (
 
 var commands = []*cli.Command{
 	{
-		Name:   "doctor",
-		Usage:  "report TPM status and what this machine is enrolled in",
-		Action: cmdDoctor,
-	},
-	{
 		Name:   "init",
 		Usage:  "create a vault in this repository and enroll this machine",
 		Action: cmdInit,
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"},
-			&cli.BoolFlag{
-				Name:  "prompt",
-				Usage: "ask for the recovery passphrase instead of generating one",
-			},
-		},
+		Flags:  []cli.Flag{&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"}},
 	},
 	{
-		Name:   "join",
-		Usage:  "accept this vault and enroll this machine using the recovery passphrase",
-		Action: cmdJoin,
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"},
-		},
-	},
-	{
-		Name:   "whoami",
-		Usage:  "show which enrolled device this machine is",
-		Action: cmdWhoami,
-	},
-	{
-		Name:  "device",
-		Usage: "manage enrolled devices",
-		Commands: []*cli.Command{
-			{
-				Name:   "ls",
-				Usage:  "list enrolled devices",
-				Action: cmdDeviceLs,
-			},
-			{
-				Name:   "pub",
-				Usage:  "print this machine's public key for enrollment elsewhere",
-				Action: cmdDevicePub,
-			},
-			{
-				Name:      "add",
-				Usage:     "seal the vault key to another device's public key",
-				ArgsUsage: "<name> <pub>",
-				Action:    cmdDeviceAdd,
-			},
-			{
-				Name:      "rm",
-				Usage:     "revoke a device from here on",
-				ArgsUsage: "<name>",
-				Action:    cmdDeviceRm,
-			},
-		},
+		Name:   "trust",
+		Usage:  "trust this vault in this folder and enroll this machine",
+		Action: cmdTrust,
+		Flags:  []cli.Flag{&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"}},
 	},
 	{
 		Name:      "set",
@@ -102,20 +56,21 @@ var commands = []*cli.Command{
 		Action:    cmdGet,
 	},
 	{
-		Name:   "edit",
-		Usage:  "edit this vault's secrets in your editor",
-		Action: cmdEdit,
-	},
-	{
 		Name:   "ls",
 		Usage:  "list the keys in this vault",
 		Action: cmdLs,
 	},
 	{
-		Name:   "print",
-		Usage:  "print export lines for this vault",
-		Flags:  []cli.Flag{shellFlag},
-		Action: cmdPrint,
+		Name:   "edit",
+		Usage:  "edit this vault's secrets in your editor",
+		Action: cmdEdit,
+	},
+	{
+		Name:            "run",
+		Usage:           "run a command with this vault's secrets in its environment",
+		ArgsUsage:       "<command> [args...]",
+		SkipFlagParsing: true,
+		Action:          cmdRun,
 	},
 	{
 		Name:   "env",
@@ -129,31 +84,25 @@ var commands = []*cli.Command{
 		Action: cmdHook,
 	},
 	{
-		Name:            "run",
-		Usage:           "run a command with this vault's secrets in its environment",
-		ArgsUsage:       "<command> [args...]",
-		SkipFlagParsing: true,
-		Action:          cmdRun,
-	},
-	{
 		Name:   "rotate",
 		Usage:  "replace the vault key and rewrap everything",
 		Action: cmdRotate,
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "prompt",
-				Usage: "ask for the recovery passphrase instead of generating one",
+	},
+	{
+		Name:  "device",
+		Usage: "manage enrolled devices",
+		Commands: []*cli.Command{
+			{
+				Name:   "ls",
+				Usage:  "list enrolled devices",
+				Action: cmdDeviceLs,
+			},
+			{
+				Name:      "rm",
+				Usage:     "remove a device and rotate the vault key",
+				ArgsUsage: "<name>",
+				Action:    cmdDeviceRm,
 			},
 		},
-	},
-	{
-		Name:   "verify",
-		Usage:  "check the vault signature and what is trusted here",
-		Action: cmdVerify,
-	},
-	{
-		Name:   "trust",
-		Usage:  "accept this vault here, after a join or a replacement",
-		Action: cmdTrust,
 	},
 }

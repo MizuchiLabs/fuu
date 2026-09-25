@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
@@ -23,27 +22,11 @@ import (
 // changed. The buffer is TOML so values with quotes or newlines survive a
 // round trip exactly.
 func cmdEdit(ctx context.Context, cmd *cli.Command) error {
-	sweepEditBufs()
-
-	path, err := vaultPath(cmd)
+	_, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-
-	release, err := lockVault(path)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	f, dk, key, err := unlock(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	before, err := f.Values(key)
+	before, err := f.Secrets(key)
 	if err != nil {
 		return err
 	}
@@ -71,33 +54,47 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	var changed, added, dropped []string
 	for _, name := range slices.Sorted(maps.Keys(edited)) {
 		old, ok := before[name]
-		if ok && old == edited[name] {
-			continue
-		}
-		if err := f.Set(key, name, []byte(edited[name])); err != nil {
-			return err
-		}
-		if ok {
+		switch {
+		case ok && old == edited[name]:
+		case ok:
 			changed = append(changed, name)
-		} else {
+		default:
 			added = append(added, name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(before)) {
-		if _, ok := edited[name]; ok {
-			continue
+		if _, ok := edited[name]; !ok {
+			dropped = append(dropped, name)
 		}
-		if err := f.Unset(key, name); err != nil {
-			return err
-		}
-		dropped = append(dropped, name)
 	}
-
 	if len(changed) == 0 && len(added) == 0 && len(dropped) == 0 {
 		fmt.Println("no changes")
 		return nil
 	}
-	if err := signAndSave(f, key, path); err != nil {
+
+	// The editor ran outside any lock, so re-open the vault and apply only the
+	// diff to whatever is on disk now. A write from another shell during the
+	// edit survives, only the names this edit actually touched are moved.
+	path, f, key, _, err := unlock(cmd)
+	if err != nil {
+		return err
+	}
+	for _, name := range changed {
+		if err := f.Set(key, name, edited[name]); err != nil {
+			return err
+		}
+	}
+	for _, name := range added {
+		if err := f.Set(key, name, edited[name]); err != nil {
+			return err
+		}
+	}
+	for _, name := range dropped {
+		if err := f.Unset(key, name); err != nil && !errors.Is(err, vault.ErrNoKey) {
+			return err
+		}
+	}
+	if err := f.Save(path); err != nil {
 		return err
 	}
 	// Names entering or leaving the shell belong to the hook, which names
@@ -108,50 +105,25 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// editBufMaxAge is how long a leftover edit buffer may sit before the next
-// edit sweeps it. A younger buffer may belong to an editor still open in
-// another window, and deleting one out from under it loses that edit, so only
-// buffers clearly abandoned by a force killed editor are touched.
-const editBufMaxAge = 24 * time.Hour
-
-// sweepEditBufs removes buffers left behind by a force killed editor, they
-// hold the vault's secrets in plaintext. A buffer younger than editBufMaxAge
-// is left alone, it may belong to an editor running right now.
-func sweepEditBufs() {
-	tmp := os.TempDir()
-	entries, err := os.ReadDir(tmp)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), "fuu-editbuf-") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if time.Since(info.ModTime()) < editBufMaxAge {
-			continue
-		}
-		_ = os.RemoveAll(filepath.Join(tmp, entry.Name()))
-	}
-}
-
 // runEditor shows the values as TOML in the user's editor and returns the result.
+//
+//nolint:gosec // G204: the editor is whatever the user configured. G703: the buffer paths come from a fresh temp dir under the operator's own XDG_RUNTIME_DIR, not from anything a repo supplies.
 func runEditor(ctx context.Context, values map[string]string) ([]byte, error) {
 	argv := strings.Fields(editor())
 	if len(argv) == 0 {
 		return nil, errors.New("edit: set $EDITOR or $VISUAL")
 	}
 
-	dir, err := os.MkdirTemp("", "fuu-editbuf-")
+	// The buffer holds the vault's secrets in plaintext, so it goes on the
+	// per-user runtime dir where there is one, and the whole directory is
+	// dropped rather than one file: editors leave swap and backup copies next
+	// to it.
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	tmp, err := os.MkdirTemp(dir, "fuu-edit-")
 	if err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
-	// The buffer is plaintext, so the whole directory goes rather than one file.
-	// Editors leave swap and backup copies next to it.
-	defer func() { _ = os.RemoveAll(dir) }()
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	var buf bytes.Buffer
 	fmt.Fprint(&buf, "# save and close to write the changes back, delete a line to drop a key\n\n")
@@ -159,12 +131,11 @@ func runEditor(ctx context.Context, values map[string]string) ([]byte, error) {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
 
-	path := filepath.Join(dir, "secrets.toml")
+	path := filepath.Join(tmp, "secrets.toml")
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
 
-	//nolint:gosec // the editor is whatever the user configured.
 	child := exec.CommandContext(ctx, argv[0], append(argv[1:], path)...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
@@ -192,12 +163,6 @@ func parseValues(raw []byte) (map[string]string, error) {
 	for name := range values {
 		if !vault.ValidName(name) {
 			return nil, fmt.Errorf("%w %q", vault.ErrBadName, name)
-		}
-		if strings.ContainsRune(values[name], 0) {
-			return nil, fmt.Errorf("edit: %q has a NUL byte in its value, the shell would drop it", name)
-		}
-		if shellHazard(name) {
-			fmt.Fprintf(os.Stderr, "edit: %q configures the shell itself, the hook keeps it out of your shell\n", name)
 		}
 	}
 	return values, nil

@@ -43,8 +43,7 @@ eval "$(fuu hook bash)"        # put into .bashrc, .zshrc or config.fish
 
 `fuu init` prints a generated recovery passphrase once, so keep a password
 manager to hand. It is the only way to enroll another machine or to recover
-from a cleared TPM, and nobody can recover it for you. Have one you like
-already? `fuu init --prompt` asks for it instead of generating it.
+from a cleared TPM, and nobody can recover it for you.
 
 Commit `.fuu.toml`. The file holds no readable secrets, so a public repository
 is fine.
@@ -57,10 +56,12 @@ Walk out and they are gone again, and the hook says that too:
 
     fuu: unloading -DATABASE_URL -API_KEY
 
-A vault only loads from a folder this machine has accepted. `fuu init` and
-`fuu join` accept the folder they run in, so that is the last you hear of it.
-Clone the repository somewhere else and the first load there is one
-`fuu trust`, after which it is silent again. That gate is the whole reason a
+A vault only loads from a folder this machine has trusted to hold that vault
+key. `fuu init` and `fuu trust` trust the folder they run in, so that is the
+last you hear of it. Clone the repository somewhere else and the first load
+there is one `fuu trust`, which asks for the recovery passphrase, after which
+it is silent again. There is no trust on first use: a vault key this machine
+has not seen always needs the passphrase. That gate is the whole reason a
 stranger's repository cannot hand you values, or reach into yours.
 
 `fuu run npm start` does the same thing for a single command with no shell
@@ -86,9 +87,9 @@ if type -q fuu
 end
 ```
 
-`fuu env` and `fuu print` detect fish from `FISH_VERSION` and emit `set -gx`
-instead of `export`, so `fuu print | source` works by accident too.
-`--shell=posix` or `--shell=fish` forces it.
+The hooks ask `fuu env` for their dialect explicitly, `--shell=posix` for bash
+and zsh and `--shell=fish` for fish, and `fuu env` takes either. Nothing
+guesses from the environment.
 
 ## How a directory finds the vault
 
@@ -113,20 +114,23 @@ DATABASE_URL = "postgres://localhost/mydb"
 
 Change a value, add a line to add a key, delete a line to drop a key. Keys you
 leave alone are not re-encrypted, and every key keeps its entry in the file,
-so a git diff shows exactly which line changed. Any shell with the hook picks
+so a git diff shows exactly which line changed. The vault is re-read after the
+editor closes and only your changes are applied to it, so a `fuu set` from
+another window while you were editing survives. Any shell with the hook picks
 up what you saved at its next prompt, no cd needed.
 
-The buffer is plaintext in a private temporary directory that is removed when
-the editor closes, swap and backup copies included. An editor with persistent
-state of its own, vim registers in viminfo or a central undo dir, keeps a copy
-outside that directory. Disable that per editor if it matters to you.
+The buffer is plaintext in a private temporary directory, on the per-user
+runtime dir where there is one, that is removed when the editor closes, swap
+and backup copies included. An editor with persistent state of its own, vim
+registers in viminfo or a central undo dir, keeps a copy outside that
+directory. Disable that per editor if it matters to you.
 
 Nothing is written if the TOML is invalid or if a key name is not a valid
 shell variable name. A name that would take over the shell rather than hold a
-secret, `PROMPT_COMMAND`, `PATH` and about fifty others, can be stored but the
-hook keeps it out of your session. Clearing the buffer is allowed, but only
-after a confirmation, since an empty buffer is more often a botched edit than
-an intention.
+secret, `PROMPT_COMMAND`, `PATH` and about fifty others, is refused outright,
+in `fuu set` as much as in `fuu edit`. Clearing the buffer is allowed, but
+only after a confirmation, since an empty buffer is more often a botched edit
+than an intention.
 
 Values with newlines or quotes round trip exactly, the buffer is TOML so
 escaping is the library's problem rather than yours. To store one from a file,
@@ -146,45 +150,35 @@ A device is one machine's TPM. Each holds its own unexportable key, and the
 vault key is sealed to every enrolled device plus your recovery passphrase.
 
 ```bash
-fuu device ls          # what is enrolled and when
-fuu device pub         # this machine's public keys, for enrollment elsewhere
-fuu device add <name> <pub>
-fuu device rm <name>   # revoke from here on
-fuu whoami             # which device is this machine
+fuu device ls          # what is enrolled, this machine marked with *
+fuu device rm <name>   # remove a device and rotate the vault key
 ```
 
 A second machine starts with a clone, then runs one command:
 
 ```bash
-fuu join    # paste the recovery passphrase, accepts the vault and enrolls this machine
+fuu trust              # type the recovery passphrase, this machine is enrolled
 ```
 
-The machines that were already in the repository run `fuu trust` once each
-after that, because the file is now signed by a key they have not seen yet.
+`fuu trust` is the only command that accepts a vault key this machine has not
+seen before, and it always takes the recovery passphrase to do it. While it is
+at it, it enrolls this machine and trusts this folder to hold that key. A
+second checkout in another folder is the one shortcut: `fuu trust` notices the
+same vault key is already trusted here and asks one question instead of the
+passphrase.
 
-`fuu trust` is also how you accept a vault you knowingly replaced. It prints
-the vault identity, the write counter and the enrolled devices, then asks for
-a typed confirmation. On a machine that is not enrolled it demands the
-recovery passphrase first, so a replacement stitched from someone else's
-wraps cannot pass.
+Enrolling a machine needs no step anywhere else. The vault key does not change,
+so every other machine simply reads the new file. Removing a device does
+change it: `fuu device rm` rotates the vault key after dropping the device, so
+the removed machine is cut off from every future value too. Every other
+machine then runs `fuu trust` once and types the new passphrase, which is
+printed on the machine that did the rotation. Rotation is also the answer to a
+machine that burned.
 
-Enrolling a machine from an enrolled machine needs no step anywhere else. Run
-`fuu device pub` on the new machine, hand its two public keys to
-`fuu device add <name> <pub>` on a machine that is already there, and the
-accepted signature on that write vouches for the new device on every machine
-that reads it.
-
-`fuu device rm` is not retroactive. A device that already unsealed the vault
-key keeps what it read. Run `fuu rotate` when a machine actually burned.
-
-Removing a device is clean in both directions. Nothing sticks on any machine.
-The removed device stops being accepted the moment the new file arrives, an
-older copy of the file is refused because its write counter is behind, and
-adding the same device again later needs no cleanup anywhere.
-
-Removing the last device is refused. With no signer left the vault can never
-be verified again. A taken name is never reused silently either, `fuu device
-add` refuses one that exists.
+Removing a device is not retroactive. A device that already unsealed the vault
+key keeps what it read, so rotate the credentials at their issuers after a
+real leak. Removing the last device is refused, and a taken name is never
+reused silently, `fuu trust` refuses one that exists.
 
 ## The vault file
 
@@ -193,70 +187,50 @@ repo and sync across your machines.
 
 ```toml title=".fuu.toml"
 version = 1
-vaultid = "v_Gk3xQ..." # the vault identity
-seq = 7 # the write counter, it only moves forward
-blob = "..." # key names and device names, encrypted
-sig = "..." # signature over the canonical contents
-signer = "..."
-
-[device."p256:Bq7mZ..."]
-pub = "p256:Bq7mZ..." # ECDH key that wraps the vault key
-epub = "..."
-wrap = "..." # the vault key, sealed to this device
 
 [recovery]
-kdf = "argon2id"
-salt = "..."
-mem = 262144
-time = 3
-wrap = "..." # the vault key, sealed to your passphrase
+salt = "..." # 16 random bytes, base64url
+wrap = "..." # the vault key, sealed to your passphrase through argon2id
+
+[device."p256:Bq7mZ..."]
+epub = "..." # the ephemeral point of the wrap
+wrap = "..." # the vault key, sealed to this device
+name = "..." # the device name, sealed under the vault key
 
 [secret]
 Wq4RKx3a9fQm2Zt7 = "..." # one line per value, under an HMAC token of its name
-
 ```
 
-Without the vault key the file gives up only the format version, the vault
-identity, the write counter, the envelopes, how many entries exist and
-roughly how long each one was. Key names are not in the file at all. They are
-HMAC tokens of the names under the vault key, and the names themselves live
-in the encrypted blob with the device registry. sops, the usual tool for a
-file like this, leaves key names in the clear, fuu does not.
+Without the vault key the file gives up only the format version, the
+envelopes, the salt, how many entries exist and roughly how long each one was.
+Key names are not in the file at all. Each one is sealed inside its own
+entry's ciphertext, addressed by an HMAC token of the name under the vault
+key, and device names are sealed the same way. sops, the usual tool for a file
+like this, leaves key names in the clear, fuu does not.
 
 The token a name maps to is stable, so a git diff still shows which entry
 changed without saying which one it is.
-
-`seq` is a signed write counter. A copy of the file older than what this
-machine has already seen refuses to load. That is what makes removing and
-re-adding a device free of side effects, no machine has to remember anything
-extra.
 
 How the crypto works and what it does and does not protect live in
 SECURITY.md, the truth for anything crypto related.
 
 ## Commands
 
-| command                       | what it does                                                           |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| `fuu init [--prompt]`         | create a vault in this repository and enroll this machine              |
-| `fuu join`                    | accept this vault and enroll this machine with the recovery passphrase |
-| `fuu doctor`                  | report TPM status and what this machine is enrolled in                 |
-| `fuu whoami`                  | show which enrolled device this machine is                             |
-| `fuu device ls\|pub\|add\|rm` | manage enrolled devices                                                |
-| `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted                    |
-| `fuu unset KEY`               | delete a secret                                                        |
-| `fuu get KEY`                 | print one value                                                        |
-| `fuu edit`                    | edit this vault's secrets in your editor                               |
-| `fuu ls`                      | list the keys in this vault                                            |
-| `fuu print`                   | print export lines for this vault                                      |
-| `fuu env`                     | print shell lines loading the vault for the current directory          |
-| `fuu hook bash\|zsh\|fish`    | the shell hook                                                         |
-| `fuu run <command> [args...]` | run a command with this vault's secrets in its env                     |
-| `fuu rotate [--prompt]`       | replace the vault key and rewrap everything                            |
-| `fuu verify`                  | check the vault signature and what is trusted here                     |
-| `fuu trust`                   | accept this vault here, after a join or a replacement                  |
+| command                       | what it does                                                    |
+| ----------------------------- | --------------------------------------------------------------- |
+| `fuu init [--name]`           | create a vault in this repository and enroll this machine       |
+| `fuu trust [--name]`          | trust this vault in this folder and enroll this machine         |
+| `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted             |
+| `fuu unset KEY`               | delete a secret                                                 |
+| `fuu get KEY`                 | print one value                                                 |
+| `fuu ls`                      | list the keys in this vault                                     |
+| `fuu edit`                    | edit this vault's secrets in your editor                        |
+| `fuu run <command> [args...]` | run a command with this vault's secrets in its env              |
+| `fuu env`                     | print shell lines loading the vault for the current directory   |
+| `fuu hook bash\|zsh\|fish`    | the shell hook                                                  |
+| `fuu rotate`                  | replace the vault key and rewrap everything                     |
+| `fuu device ls\|rm`           | manage enrolled devices                                         |
 
-Every read and every mutation checks the stored signature against this
-machine's accepted signing keys and the write counter before anything in the
-file is believed. `fuu trust` is the only command that accepts a signing key
-nobody here has vouched for yet.
+Nothing loads from a folder this machine has not trusted to hold that vault
+key, and the key behind a trusted folder never changes unnoticed: a rotation
+elsewhere stops the load until `fuu trust` says otherwise.

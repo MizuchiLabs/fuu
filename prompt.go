@@ -6,33 +6,14 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode/utf8"
 
 	"golang.org/x/term"
 )
 
-const (
-	minPassLen      = 20
-	minPassDistinct = 6
-)
-
-func prompt(label string, repeat bool) (string, error) {
-	first, err := readSecret(label)
-	if err != nil {
-		return "", err
-	}
-	if !repeat {
-		return first, nil
-	}
-
-	second, err := readSecret("repeat " + label)
-	if err != nil {
-		return "", err
-	}
-	if first != second {
-		return "", errors.New("prompt: entries do not match")
-	}
-	return first, nil
+// prompt reads one secret line. It loses the echo on a terminal and takes a
+// plain line when stdin is a pipe, so commands stay scriptable.
+func prompt(label string) (string, error) {
+	return readSecret(label)
 }
 
 // confirm takes one visible line, since the answer is not a secret. Anything
@@ -47,30 +28,6 @@ func confirm(label string) (bool, error) {
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes", nil
-}
-
-// checkPassphrase is the floor for new recovery passphrases. An offline attack
-// on the recovery wrap meets argon2id and then only this.
-func checkPassphrase(p string) error {
-	trimmed := strings.TrimSpace(p)
-	if utf8.RuneCountInString(trimmed) < minPassLen {
-		return fmt.Errorf(
-			"passphrase: at least %d characters, generate one with a password manager or diceware. It is the only thing slowing an offline attack on the recovery wrap",
-			minPassLen,
-		)
-	}
-
-	distinct := make(map[rune]struct{}, len(trimmed))
-	for _, r := range trimmed {
-		distinct[r] = struct{}{}
-	}
-	if len(distinct) < minPassDistinct {
-		return fmt.Errorf(
-			"passphrase: at least %d different characters, a run of one thing is the cheap answer to a length rule",
-			minPassDistinct,
-		)
-	}
-	return nil
 }
 
 // readSecret hides the input on a terminal and takes a plain line when stdin
@@ -93,4 +50,16 @@ func readSecret(label string) (string, error) {
 		return "", fmt.Errorf("prompt: %w", err)
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// showPassphrase prints the one copy fuu will ever show, to stdout so that
+// saving it is a redirect rather than a hunt through the scrollback.
+func showPassphrase(pass string) {
+	fmt.Println("your new recovery passphrase:")
+	fmt.Println()
+	fmt.Printf("    %s\n", pass)
+	fmt.Println()
+	fmt.Println("store it in your password manager now. It is the only way to enroll")
+	fmt.Println("another machine or to recover from a cleared TPM, and nobody can")
+	fmt.Println("recover it for you.")
 }

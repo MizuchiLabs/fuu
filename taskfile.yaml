@@ -1,11 +1,6 @@
 version: "3"
 
 tasks:
-  doctor:
-    desc: Show TPM device key
-    cmds:
-      - go run . doctor
-
   update:
     desc: Update dependencies
     cmds:

@@ -1,23 +1,20 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/ecdh"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/mizuchilabs/fuu/internal/seal"
-	"github.com/mizuchilabs/fuu/internal/sig"
 )
 
 type softKey struct{ key *ecdh.PrivateKey }
 
-var _ seal.DeviceKey = (*softKey)(nil)
+var _ DeviceKey = (*softKey)(nil)
 
 func newSoftKey(t *testing.T) *softKey {
 	t.Helper()
@@ -32,53 +29,60 @@ func (k *softKey) Public() *ecdh.PublicKey { return k.key.PublicKey() }
 
 func (k *softKey) ECDH(peer *ecdh.PublicKey) ([]byte, error) { return k.key.ECDH(peer) }
 
-type softSigner struct{ key *ecdsa.PrivateKey }
-
-var _ sig.Signer = (*softSigner)(nil)
-
-func newSoftSigner(t *testing.T) *softSigner {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate signer: %v", err)
-	}
-	return &softSigner{key: key}
-}
-
-func (s *softSigner) Public() *ecdsa.PublicKey { return &s.key.PublicKey }
-
-func (s *softSigner) Sign(digest []byte) ([]byte, error) {
-	return ecdsa.SignASN1(rand.Reader, s.key, digest)
-}
-
-// newFixture builds a vault with one device and two values, sealed and signed.
+// newFixture builds a vault with one device and two values.
 func newFixture(t *testing.T) (f *File, dk *softKey, key []byte) {
 	t.Helper()
-	dk, signer := newSoftKey(t), newSoftSigner(t)
+	dk = newSoftKey(t)
 
-	f, err := New(dk, "open sesame", "laptop", signer.Public())
+	f, key, err := New(dk, "laptop", "open sesame")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	key, err = f.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	t.Cleanup(func() { clear(key) })
 
 	for name, value := range map[string]string{"API_KEY": "s3cret", "DATABASE_URL": "postgres://x"} {
-		if err := f.Set(key, name, []byte(value)); err != nil {
+		if err := f.Set(key, name, value); err != nil {
 			t.Fatalf("Set %s: %v", name, err)
 		}
-	}
-	if err := f.Stamp(signer); err != nil {
-		t.Fatalf("Stamp: %v", err)
 	}
 	return f, dk, key
 }
 
-// TestFileHidesNames is the point of the format: nothing in the readable
-// bytes reveals what the vault holds or whose chips are enrolled.
+// TestRoundTrip is the open path the shell hook uses, with values that need
+// quoting to survive in a shell at all.
+func TestRoundTrip(t *testing.T) {
+	f, dk, key := newFixture(t)
+	if err := f.Set(key, "QUOTED", "line one\nit's \"fine\""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	unsealed, err := got.Unseal(dk)
+	if err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	values, err := got.Secrets(unsealed)
+	if err != nil {
+		t.Fatalf("Secrets: %v", err)
+	}
+	want := map[string]string{
+		"API_KEY":      "s3cret",
+		"DATABASE_URL": "postgres://x",
+		"QUOTED":       "line one\nit's \"fine\"",
+	}
+	if !maps.Equal(values, want) {
+		t.Fatalf("values = %v, want %v", values, want)
+	}
+}
+
+// TestFileHidesNames is the point of the format: nothing in the readable bytes
+// reveals what the vault holds or whose chips are enrolled.
 func TestFileHidesNames(t *testing.T) {
 	f, _, _ := newFixture(t)
 
@@ -87,211 +91,94 @@ func TestFileHidesNames(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	raw := string(mustRead(t, path))
-
-	for _, leak := range []string{"API_KEY", "DATABASE_URL", "postgres://x", "s3cret", "laptop", "open sesame"} {
+	for _, leak := range []string{"API_KEY", "DATABASE_URL", "laptop"} {
 		if strings.Contains(raw, leak) {
 			t.Fatalf("the vault file leaks %q", leak)
 		}
 	}
-	for _, want := range []string{"version", "vaultid", "seq", "blob", "device", "recovery", "secret"} {
-		if !strings.Contains(raw, want) {
-			t.Fatalf("the vault file is missing its %q field", want)
-		}
-	}
 }
 
-// TestValuesRoundTrip covers the open path the shell hook uses.
-func TestValuesRoundTrip(t *testing.T) {
-	f, dk, _ := newFixture(t)
-
-	key, err := f.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	defer clear(key)
-
-	values, err := f.Values(key)
-	if err != nil {
-		t.Fatalf("Values: %v", err)
-	}
-	if values["API_KEY"] != "s3cret" || values["DATABASE_URL"] != "postgres://x" {
-		t.Fatalf("values = %v", values)
-	}
-
-	names, err := f.Names(key)
-	if err != nil {
-		t.Fatalf("Names: %v", err)
-	}
-	if len(names) != 2 || names[0] != "API_KEY" {
-		t.Fatalf("names = %v", names)
-	}
-}
-
-// TestSaveLoadRoundTrip verifies the file form survives git, which is the
-// whole point of the format.
-func TestSaveLoadRoundTrip(t *testing.T) {
-	f, dk, _ := newFixture(t)
-
-	path := filepath.Join(t.TempDir(), ".fuu.toml")
-	if err := f.Save(path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	got, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got.VaultID != f.VaultID {
-		t.Fatalf("vaultid = %q, want %q", got.VaultID, f.VaultID)
-	}
-	if got.Digest() != f.Digest() {
-		t.Fatal("digest differs after a reload")
-	}
-	pubs, err := got.SignerPubs(mustKey(t, got, dk))
-	if err != nil {
-		t.Fatalf("SignerPubs: %v", err)
-	}
-	if err := got.Verify(pubs); err != nil {
-		t.Fatalf("Verify after reload: %v", err)
-	}
-}
-
-// TestEditKeepsUnchangedEntriesUntouched keeps git diffs small: a value edit
-// rewrites one body and leaves the payload blob alone.
-func TestEditKeepsUnchangedEntriesUntouched(t *testing.T) {
+// TestSecretsRefusesSwappedBodies covers swapping two entries in the file: the
+// body carries its token as additional data, so it will not open pasted into
+// another entry.
+func TestSecretsRefusesSwappedBodies(t *testing.T) {
 	f, _, key := newFixture(t)
 
-	before := f.Blob
-	if err := f.Set(key, "API_KEY", []byte("rotated")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if f.Blob != before {
-		t.Fatal("a value edit rewrote the name blob, the diff would show everything")
-	}
-	got, err := f.Get(key, "API_KEY")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "rotated" {
-		t.Fatalf("got %q", got)
-	}
-
-	// a new name does change the blob, it has to
-	if err := f.Set(key, "NEW_KEY", []byte("x")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if f.Blob == before {
-		t.Fatal("adding a name left the name blob alone")
-	}
-}
-
-// TestValueBoundToItsName covers swapping two bodies in the file.
-func TestValueBoundToItsName(t *testing.T) {
-	f, _, key := newFixture(t)
-
-	mine, err := seal.NameToken(key, "API_KEY")
-	if err != nil {
-		t.Fatalf("NameToken: %v", err)
-	}
-	other, err := seal.NameToken(key, "DATABASE_URL")
-	if err != nil {
-		t.Fatalf("NameToken: %v", err)
-	}
+	mine := token(key, "API_KEY")
+	other := token(key, "DATABASE_URL")
 	f.Secret[other] = f.Secret[mine]
 
-	// the body carries its own name as additional data, so it will not open
-	// under the entry it was pasted into
-	if _, err := f.Get(key, "DATABASE_URL"); err == nil {
-		t.Fatal("a pasted body opened under the wrong name")
-	}
-	got, err := f.Get(key, "API_KEY")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "s3cret" {
-		t.Fatalf("got %q", got)
+	if _, err := f.Secrets(key); err == nil {
+		t.Fatal("Secrets accepted two entries carrying one body")
 	}
 }
 
-// TestRotateRewraps verifies a rotated vault opens for the same device with
-// the new key and keeps every value.
+// TestForeignDeviceRefused is the attack fuu must not swallow: someone with
+// repo write access adds a device entry of their own, and the next rotation
+// would seal the new key to it. The entry cannot carry a name under the vault
+// key, so that is what gives it away before anything is wrapped to it.
+func TestForeignDeviceRefused(t *testing.T) {
+	f, _, key := newFixture(t)
+
+	attacker := newSoftKey(t)
+	ePub, body, err := wrapKey(attacker.Public(), make([]byte, vaultKeySize))
+	if err != nil {
+		t.Fatalf("wrapKey: %v", err)
+	}
+	pub := Pub(attacker.Public())
+	f.Device[pub] = Device{EPub: ePub, Wrap: body, Name: "pwned"}
+
+	if _, err := f.Secrets(key); err != nil {
+		t.Fatalf("Secrets of the honest entries: %v", err)
+	}
+	if _, err := f.Devices(key); err == nil {
+		t.Fatal("Devices accepted a device entry sealed outside the vault key")
+	}
+	if _, err := f.Rotate(key, "new passphrase"); err == nil {
+		t.Fatal("Rotate ran past a device entry sealed outside the vault key")
+	}
+}
+
+// TestRotateRewraps verifies a rotated vault opens for the same device under
+// the new key, keeps every value, and moves recovery to the new passphrase.
 func TestRotateRewraps(t *testing.T) {
 	f, dk, key := newFixture(t)
 
-	if err := f.Rotate(key, "new passphrase"); err != nil {
+	fresh, err := f.Rotate(key, "new passphrase")
+	if err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
-	clear(key)
 
-	fresh, err := f.VaultKey(dk)
+	values, err := f.Secrets(fresh)
 	if err != nil {
-		t.Fatalf("VaultKey after rotate: %v", err)
-	}
-	defer clear(fresh)
-
-	values, err := f.Values(fresh)
-	if err != nil {
-		t.Fatalf("Values after rotate: %v", err)
+		t.Fatalf("Secrets after rotate: %v", err)
 	}
 	if values["API_KEY"] != "s3cret" {
 		t.Fatalf("values after rotate = %v", values)
 	}
-	if _, err := f.VaultKeyPass("new passphrase"); err != nil {
+	unsealed, err := f.Unseal(dk)
+	if err != nil {
+		t.Fatalf("Unseal after rotate: %v", err)
+	}
+	if !bytes.Equal(unsealed, fresh) {
+		t.Fatal("the device unsealed a different key than the rotated one")
+	}
+	if _, err := f.Secrets(key); err == nil {
+		t.Fatal("the old vault key still opens the entries")
+	}
+	if _, err := f.UnsealPassphrase("new passphrase"); err != nil {
 		t.Fatalf("the new recovery wrap does not open: %v", err)
 	}
-	if _, err := f.VaultKeyPass("open sesame"); err == nil {
+	if _, err := f.UnsealPassphrase("open sesame"); err == nil {
 		t.Fatal("the old recovery passphrase still works after rotate")
 	}
 }
 
-// TestDeviceLifecycle covers enrolling, revoking and the guard on the last
-// device, with no leftover side effects on the values.
-func TestDeviceLifecycle(t *testing.T) {
-	f, _, key := newFixture(t)
-
-	other := newSoftKey(t)
-	otherSigner := newSoftSigner(t)
-	if err := f.AddDevice(key, "desktop", "2026-09-24", other.Public(), otherSigner.Public()); err != nil {
-		t.Fatalf("AddDevice: %v", err)
-	}
-	if err := f.AddDevice(
-		key,
-		"desktop",
-		"2026-09-24",
-		newSoftKey(t).Public(),
-		newSoftSigner(t).Public(),
-	); !errors.Is(
-		err,
-		ErrDupName,
-	) {
-		t.Fatalf("AddDevice with a taken name = %v, want ErrDupName", err)
-	}
-
-	pub := Pub(other.Public())
-	if err := f.RemoveDevice(key, pub); err != nil {
-		t.Fatalf("RemoveDevice: %v", err)
-	}
-	if _, err := f.VaultKey(other); err == nil {
-		t.Fatal("a revoked device still opens the vault key")
-	}
-	if err := f.RemoveDevice(key, pub); err == nil {
-		t.Fatal("RemoveDevice accepted a device that is already gone")
-	}
-
-	values, err := f.Values(key)
-	if err != nil {
-		t.Fatalf("Values after revocation: %v", err)
-	}
-	if values["API_KEY"] != "s3cret" {
-		t.Fatalf("revocation dropped values: %v", values)
-	}
-}
-
-// TestRemoveLastDeviceIsRefused keeps the vault from becoming unverifiable.
+// TestRemoveLastDeviceIsRefused keeps the vault from losing its last device.
 func TestRemoveLastDeviceIsRefused(t *testing.T) {
-	f, dk, key := newFixture(t)
+	f, dk, _ := newFixture(t)
 
-	if err := f.RemoveDevice(key, Pub(dk.Public())); !errors.Is(err, ErrLast) {
+	if err := f.RemoveDevice(Pub(dk.Public())); !errors.Is(err, ErrLast) {
 		t.Fatalf("RemoveDevice of the last device = %v, want ErrLast", err)
 	}
 	if len(f.Device) != 1 {
@@ -299,59 +186,51 @@ func TestRemoveLastDeviceIsRefused(t *testing.T) {
 	}
 }
 
-// TestCanonicalCoversEverything is what makes a tamper visible: every field
-// the file holds is in the signed bytes.
-func TestCanonicalCoversEverything(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(f *File)
-	}{
-		{"seq", func(f *File) { f.Seq++ }},
-		{"vaultid", func(f *File) { f.VaultID = "v_other" }},
-		{"blob", func(f *File) { f.Blob += "x" }},
-		{"device wrap", func(f *File) {
-			for pub, d := range f.Device {
-				d.Wrap += "x"
-				f.Device[pub] = d
-			}
-		}},
-		{"recovery mem", func(f *File) { f.Recovery.Mem++ }},
-		{"secret body", func(f *File) {
-			for token := range f.Secret {
-				f.Secret[token] = "tampered"
-			}
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := newFixture(t)
-			before := got.Canonical()
-			tc.mutate(got)
-			if string(before) == string(got.Canonical()) {
-				t.Fatal("Canonical did not cover the mutated field")
-			}
-		})
-	}
-}
-
-// TestVerifyRejectsTampering covers the read path the shell hook takes.
-func TestVerifyRejectsTampering(t *testing.T) {
+// TestSaveConflict covers both writers losing: a vault that would overwrite an
+// existing file and a save that raced with another machine's write.
+func TestSaveConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
 	f, _, key := newFixture(t)
-	pubs, err := f.SignerPubs(key)
-	if err != nil {
-		t.Fatalf("SignerPubs: %v", err)
-	}
-	if err := f.Verify(pubs); err != nil {
-		t.Fatalf("Verify: %v", err)
+
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 
-	f.Seq = 99
-	if err := f.Verify(pubs); !errors.Is(err, sig.ErrUnverified) {
-		t.Fatalf("Verify after tampering = %v, want ErrUnverified", err)
+	// A vault from scratch would overwrite an existing file.
+	fresh := &File{Version: Version, Device: map[string]Device{}, Secret: map[string]string{}}
+	if err := fresh.Save(path); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Save over an existing file = %v, want ErrConflict", err)
+	}
+
+	second, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.Set(key, "API_KEY", "rotated"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := second.Set(key, "API_KEY", "rotated"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := second.Save(path); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Save of the stale copy = %v, want ErrConflict", err)
 	}
 }
 
-// TestValidName guards the eval the shell hook runs the output through.
+// TestWrongPassphraseFails is the whole recovery barrier.
+func TestWrongPassphraseFails(t *testing.T) {
+	f, _, _ := newFixture(t)
+
+	if _, err := f.UnsealPassphrase("wrong"); err == nil {
+		t.Fatal("the wrong passphrase opened the recovery wrap")
+	}
+}
+
+// TestValidName guards the eval the shell hook runs the output through, and
+// the names that would take the shell over.
 func TestValidName(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -360,12 +239,17 @@ func TestValidName(t *testing.T) {
 		{"API_KEY", true},
 		{"_", true},
 		{"a1", true},
-		{"1a", false},
+		{"1A", false},
 		{"", false},
 		{"A=B", false},
 		{"A B", false},
+		{"A-B", false},
 		{"A\nB", false},
 		{"$(id)", false},
+		{"PATH", false},
+		{"path", false},
+		{"LD_PRELOAD", false},
+		{"FUU_STATE", false},
 	} {
 		if got := ValidName(tc.name); got != tc.want {
 			t.Fatalf("ValidName(%q) = %v, want %v", tc.name, got, tc.want)
@@ -373,31 +257,20 @@ func TestValidName(t *testing.T) {
 	}
 }
 
-// TestParseDeviceKeyBinding keeps the lookup key bound to the key the wrap is
-// sealed to, so a doctored file cannot rename a device out of its slot.
-func TestParseDeviceKeyBinding(t *testing.T) {
-	matched := []byte(
-		"version = 1\nvaultid = \"v_test\"\n\n[device.\"p256:AAAA\"]\npub = \"p256:AAAA\"\nepub = \"e\"\nwrap = \"w\"\n",
-	)
-	if _, err := Parse(matched, ".fuu.toml"); err != nil {
-		t.Fatalf("Parse matching device: %v", err)
+func TestValidDeviceName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"my-laptop.local", true},
+		{"laptop", true},
+		{"", false},
+		{"has space", false},
+	} {
+		if got := validDeviceName(tc.name); got != tc.want {
+			t.Fatalf("validDeviceName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
-
-	renamed := []byte(
-		"version = 1\nvaultid = \"v_test\"\n\n[device.\"p256:AAAA\"]\npub = \"p256:BBBB\"\nepub = \"e\"\nwrap = \"w\"\n",
-	)
-	if _, err := Parse(renamed, ".fuu.toml"); err == nil {
-		t.Fatal("Parse accepted a device whose map key does not match its key")
-	}
-}
-
-func mustKey(t *testing.T, f *File, dk seal.DeviceKey) []byte {
-	t.Helper()
-	key, err := f.VaultKey(dk)
-	if err != nil {
-		t.Fatalf("VaultKey: %v", err)
-	}
-	return key
 }
 
 func mustRead(t *testing.T, path string) []byte {

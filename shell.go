@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -89,7 +90,9 @@ func cmdHook(_ context.Context, cmd *cli.Command) error {
 
 // cmdEnv emits the shell lines that load this directory's vault into the
 // shell, and drops what the shell holds when there is no vault here or it
-// cannot be trusted.
+// cannot be opened. FUU_STATE is the fingerprint of what the shell holds, so
+// the hook stays silent while nothing changed and a failure is reported once
+// instead of once per prompt.
 func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	out, err := emitterFor(cmd)
 	if err != nil {
@@ -100,6 +103,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if errors.Is(err, errNoVault) {
 		out.unload(loaded)
+		out.dropState()
 		announce(path, loaded, nil)
 		return nil
 	}
@@ -107,54 +111,37 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	stamp, err := vaultStamp(path)
-	if err != nil {
-		return err
-	}
-	// The hook runs this before every prompt, so say nothing while the shell
-	// already holds exactly this state and nothing needs unsealing.
-	if stamp == os.Getenv("FUU_STAMP") && len(loaded) > 0 {
-		return nil
-	}
-
-	f, err := openVerified(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
+	state, err := vaultState(path)
+	if errors.Is(err, os.ErrNotExist) {
 		out.unload(loaded)
+		out.dropState()
 		announce(path, loaded, nil)
 		return nil
-	case errors.Is(err, errUnaccepted), errors.Is(err, errUntrusted),
-		errors.Is(err, errStale), errors.Is(err, errRevoked):
+	}
+	if err != nil {
+		return err
+	}
+	if state == os.Getenv("FUU_STATE") {
+		return nil
+	}
+
+	_, f, key, _, err := unlock(cmd)
+	values := map[string]string{}
+	if err == nil {
+		values, err = f.Secrets(key)
+	}
+	if err != nil {
 		// The hook runs at every prompt, so a refusal is a message and a
-		// clean shell rather than a failed eval. FUU_STAMP remembers what
-		// was already reported, so the message lands once per situation
-		// and not once per prompt.
-		mark := refusalMark(err, stamp)
-		if len(loaded) == 0 && os.Getenv("FUU_STAMP") == mark {
-			return nil
-		}
-		if os.Getenv("FUU_STAMP") != mark {
-			fmt.Fprintf(os.Stderr, "fuu: %v\n", err)
-		}
+		// clean shell rather than a failed eval. FUU_STATE remembers what was
+		// already reported: the same state stays silent at later prompts, and
+		// a fuu trust or a file change alters the state and retries.
+		fmt.Fprintf(os.Stderr, "fuu: %s\n", present(err))
 		out.unload(loaded)
 		announce(path, loaded, nil)
-		out.export("FUU_STAMP", mark)
+		out.export("FUU_STATE", state)
 		return nil
-	case err != nil:
-		return err
 	}
 
-	dk, key, err := openKey(f)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	values, err := f.Values(key)
-	if err != nil {
-		return err
-	}
 	for _, name := range loaded {
 		if _, ok := values[name]; !ok {
 			out.unset(name)
@@ -162,29 +149,35 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	}
 	names := emitValues(out, values)
 	out.export("FUU_LOADED", strings.Join(names, " "))
-	out.export("FUU_STAMP", stamp)
+	out.export("FUU_STATE", state)
 	announce(path, loaded, names)
 	return nil
 }
 
-// vaultStamp fingerprints the vault bytes so a shell can tell it is already
-// current without unsealing anything.
-func vaultStamp(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+// vaultState fingerprints the folder, the vault bytes and what this folder is
+// pinned to, so a shell can tell it is already current without unsealing
+// anything.
+func vaultState(path string) (string, error) {
+	dir, err := vaultDir(path)
+	if err != nil {
+		return "", err
 	}
+	pins, err := loadPins()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("env: %w", err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
-}
-
-// refusalMark fingerprints a refusal and the vault bytes behind it, so the
-// hook can tell an already reported situation from a new one.
-func refusalMark(err error, stamp string) string {
-	sum := sha256.Sum256([]byte(err.Error() + "\x00" + stamp))
-	return fmt.Sprintf("refused:%x", sum)
+	buf := make([]byte, 0, len(dir)+len(data)+len(pins[dir])+2)
+	buf = append(buf, dir...)
+	buf = append(buf, 0)
+	buf = append(buf, data...)
+	buf = append(buf, 0)
+	buf = append(buf, pins[dir]...)
+	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // announce reports which names the hook just moved in or out of the shell,
@@ -212,27 +205,6 @@ func announce(path string, loaded, names []string) {
 	fmt.Fprintf(os.Stderr, "fuu: %s: %s\n", path, strings.Join(parts, " "))
 }
 
-func cmdPrint(_ context.Context, cmd *cli.Command) error {
-	out, err := emitterFor(cmd)
-	if err != nil {
-		return err
-	}
-
-	f, dk, key, err := unlock(cmd)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	values, err := f.Values(key)
-	if err != nil {
-		return err
-	}
-	emitValues(out, values)
-	return nil
-}
-
 func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
 	// SkipFlagParsing hands -- straight through, but humans read it as a separator.
@@ -243,14 +215,11 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 		return errors.New("run: want <command> [args...]")
 	}
 
-	f, dk, key, err := unlock(cmd)
+	_, f, key, _, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = dk.Close() }()
-	defer clear(key)
-
-	values, err := f.Values(key)
+	values, err := f.Secrets(key)
 	if err != nil {
 		return err
 	}
@@ -264,14 +233,10 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	return child.Run()
 }
 
-// envPairs builds the child environment with the same hazard filter the hook
-// applies, so a vault key named PATH or LD_PRELOAD reaches no process either.
+// envPairs builds the child environment from the vault's values.
 func envPairs(values map[string]string) []string {
 	out := make([]string, 0, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
-		if shellHazard(name) {
-			continue
-		}
 		out = append(out, name+"="+values[name])
 	}
 	return out
