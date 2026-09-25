@@ -1,0 +1,15 @@
+version = 1
+
+[recovery]
+  salt = "gLAvVm0pkCt3LlZw3BSUFw"
+  wrap = "Be4gj1X5eF7B8iWtkQsL0TZT2JGIlR1fJUINjWJlwbBarDVJ8sSp3_wfcKyEWJwLrwb1pebC1InEqU6Ju6WkHJ-cTf3Y4B9H"
+
+[device]
+  [device."p256:AqnqN4tB0P4YzG-wHzbXBalhRDlloHtk6xEIB6t7s-JJ"]
+    epub = "A0k97x8K8NyXtJM3VjdpdXQSwC6NRGvcNECXiox2rAEN"
+    wrap = "kmUEaIYjdcWgMug61WZtESz7_xLRe0RK0sjC8SjJ4gxMD5ZxNeJILAP_NnHNP5EP9EcMvhGDKznwceMphytKlBqmyJQCj2NC"
+    name = "c_ZpZzu4N9HbejPEYS2BmqE-QZLF7frcWI2cBvkwYb6yopRtsDU2OQOZRZOt5w"
+
+[secret]
+  28PlMcY7br6yWv5I = "l4bTptzXPAtXgoLbZXwhn8rNRCDxBOCDVhlPz6bfJIkMn0_dAbehlJpg8BWOb6amyk6Kh0RE"
+  aYcfUrA2vYUi8UMN = "sAfSS_kxPpZr3IBSUyogcSSRDdh1-BAzDKCrxuTtS7Ymy48WK02G0foWX5slmepeFlywAlD09omRRnmkoXmT"
