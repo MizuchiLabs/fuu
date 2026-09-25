@@ -172,13 +172,13 @@ func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte,
 	defer func() { _ = os.RemoveAll(tmp) }()
 
 	var buf bytes.Buffer
-	fmt.Fprint(&buf, "# save and close to write the changes back, delete a line to drop a key\n")
-	fmt.Fprint(&buf, "# comment a line out to keep it in the vault but out of the shell\n\n")
+	fmt.Fprint(&buf, "# save and close to write the changes back\n")
+	fmt.Fprint(&buf, "# comment out to disable a key, delete the line to drop it\n\n")
 	if err := toml.NewEncoder(&buf).Encode(values); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
 	if len(disabled) > 0 {
-		fmt.Fprint(&buf, "\n# commented out, kept in the vault and never loaded into a shell\n")
+		fmt.Fprint(&buf, "\n# disabled, kept in the vault\n")
 		var dbuf bytes.Buffer
 		if err := toml.NewEncoder(&dbuf).Encode(disabled); err != nil {
 			return nil, fmt.Errorf("edit: %w", err)
