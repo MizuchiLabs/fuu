@@ -10,8 +10,7 @@ import (
 	"golang.org/x/term"
 )
 
-// confirm takes one visible line, since the answer is not a secret. Anything
-// but a plain yes means no.
+// Anything but a plain yes means no.
 func confirm(label string) (bool, error) {
 	fmt.Fprintf(os.Stderr, "%s [y/N]: ", label)
 	defer fmt.Fprintln(os.Stderr)
@@ -24,8 +23,7 @@ func confirm(label string) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-// readSecret hides the input on a terminal and takes a plain line when stdin
-// is a pipe, so init and set stay scriptable.
+// Takes a plain line when stdin is a pipe, so init and set stay scriptable.
 func readSecret(label string) (string, error) {
 	fmt.Fprintf(os.Stderr, "%s: ", label)
 	defer fmt.Fprintln(os.Stderr)
@@ -46,8 +44,7 @@ func readSecret(label string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// showPassphrase prints the one copy fuu will ever show, to stdout so that
-// saving it is a redirect rather than a hunt through the scrollback.
+// Goes to stdout so saving it is a redirect rather than a hunt through the scrollback.
 func showPassphrase(pass string) {
 	fmt.Println("your new recovery passphrase:")
 	fmt.Println()

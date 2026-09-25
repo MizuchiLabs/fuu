@@ -16,10 +16,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// The hooks only ever call back into fuu env. Nothing from a repo is executed,
-// so there is no allow gate to manage. They run before every prompt and fuu env
-// says nothing while the shell already holds the current state, so a change
-// saved from anywhere, including fuu edit in another window, lands without a cd.
+// The hooks only ever call back into fuu env, no repo code runs, and a change
+// saved anywhere lands without a cd.
 const hookBash = `# fuu, add to .bashrc:  eval "$(fuu hook bash)"
 _fuu_hook() {
 	local previous_exit_status=$?
@@ -89,11 +87,8 @@ func cmdHook(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// cmdEnv emits the shell lines that load this directory's vault into the
-// shell, and drops what the shell holds when there is no vault here or it
-// cannot be opened. FUU_STATE is the fingerprint of what the shell holds, so
-// the hook stays silent while nothing changed and a failure is reported once
-// instead of once per prompt.
+// FUU_STATE is the fingerprint of what the shell holds, so the hook stays
+// silent while nothing changed and a failure is reported once.
 func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	out, err := emitterFor(cmd)
 	if err != nil {
@@ -132,10 +127,8 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		values, err = f.Secrets(key)
 	}
 	if err != nil {
-		// The hook runs at every prompt, so a refusal is a message and a
-		// clean shell rather than a failed eval. FUU_STATE remembers what was
-		// already reported: the same state stays silent at later prompts, and
-		// a fuu trust or a file change alters the state and retries.
+		// The hook runs at every prompt, so a refusal is a message and a clean
+		// shell rather than a failed eval.
 		fmt.Fprintf(os.Stderr, "fuu: %s\n", present(err))
 		out.unload(loaded)
 		announce(path, loaded, nil)
@@ -155,9 +148,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// vaultState fingerprints the folder, the vault bytes and what this folder is
-// pinned to, so a shell can tell it is already current without unsealing
-// anything.
+// The shell can tell it is already current without unsealing anything.
 func vaultState(path string) (string, error) {
 	dir, err := vaultDir(path)
 	if err != nil {
@@ -181,10 +172,7 @@ func vaultState(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// announce reports which names the hook just moved in or out of the shell,
-// direnv style. Values never appear here, and a move that changes no names
-// says nothing. A nil name set means the shell was unloaded, an empty one is
-// a vault that holds no keys and still announces itself as loading.
+// Values never appear here, and a move that changes no names says nothing.
 func announce(path string, loaded, names []string) {
 	parts := make([]string, 0, len(loaded)+len(names))
 	for _, n := range names {
@@ -208,7 +196,6 @@ func announce(path string, loaded, names []string) {
 	fmt.Fprintf(os.Stderr, "fuu: export %s\n", strings.Join(parts, " "))
 }
 
-// displayPath is the absolute path with the home directory folded to a leading ~.
 func displayPath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -253,7 +240,6 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	return child.Run()
 }
 
-// envPairs builds the child environment from the vault's values.
 func envPairs(values map[string]string) []string {
 	out := make([]string, 0, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {

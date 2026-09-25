@@ -1,11 +1,5 @@
-// Package vault is the on disk vault: one TOML file per repository, meant to
-// be committed and passed around in public.
-//
-// Only the format version, the envelopes and the opaque entry tokens are
-// readable without the vault key. Key names never appear in the file: each
-// name is sealed inside its own entry's ciphertext. The vault key is sealed
-// once per enrolled device and once to the recovery passphrase, so enrolling
-// or revoking a device rewrites one block and leaves every value untouched.
+// Package vault is the on disk vault: one TOML file per repository, meant to be committed in public.
+// Only the format version, the envelopes and the opaque entry tokens are readable without the vault key.
 package vault
 
 import (
@@ -53,16 +47,15 @@ type Recovery struct {
 	Wrap string `toml:"wrap"`
 }
 
-// Device is one enrolled chip's wrap of the vault key and its name, sealed
-// under the vault key so the file says nothing about whose chips are enrolled.
+// Device is one enrolled chip's wrap of the vault key, its name sealed under
+// it so the file says nothing about whose chips are enrolled.
 type Device struct {
 	EPub string `toml:"epub"`
 	Wrap string `toml:"wrap"`
 	Name string `toml:"name"`
 }
 
-// File is the whole vault. Everything but Version is an envelope, a salt or an
-// opaque token, so the readable surface is fixed.
+// File is the whole vault. Everything but Version is an envelope, a salt or an opaque token.
 type File struct {
 	Version  int               `toml:"version"`
 	Recovery Recovery          `toml:"recovery"`
@@ -82,8 +75,7 @@ func Load(path string) (*File, error) {
 	return Parse(data)
 }
 
-// Parse reads vault bytes and remembers them, so Save can tell whether the
-// file changed under it.
+// Parse remembers the bytes it read, so Save can tell whether the file changed under it.
 func Parse(data []byte) (*File, error) {
 	f := new(File)
 	if err := toml.Unmarshal(data, f); err != nil {
@@ -105,8 +97,8 @@ func Parse(data []byte) (*File, error) {
 	return f, nil
 }
 
-// New creates a vault holding a fresh vault key sealed to dk and to
-// passphrase, and returns that key for this session.
+// New creates a vault with a fresh vault key sealed to dk and passphrase,
+// and returns that key for this session.
 func New(dk DeviceKey, name, passphrase string) (*File, []byte, error) {
 	key := make([]byte, vaultKeySize)
 	if _, err := rand.Read(key); err != nil {
@@ -127,9 +119,8 @@ func New(dk DeviceKey, name, passphrase string) (*File, []byte, error) {
 	return f, key, nil
 }
 
-// Save writes the vault, refusing when the file on disk is not the bytes this
-// File was loaded or saved as. That covers both a vault written over an
-// existing file and a concurrent writer, so nothing is ever silently clobbered.
+// Save refuses when the file on disk is not the bytes this File was loaded
+// or saved as, so nothing is silently clobbered.
 func (f *File) Save(path string) error {
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(f); err != nil {
@@ -167,15 +158,14 @@ func (f *File) UnsealPassphrase(pass string) ([]byte, error) {
 	return unwrapPassphrase(pass, f.Recovery.Salt, f.Recovery.Wrap)
 }
 
-// Secrets opens and validates the enabled entries as name to value. It
-// authenticates every entry it returns: any entry that is not sealed under
-// this key is a refusal.
+// Secrets opens the enabled entries as name to value, refusing any entry
+// not sealed under this key.
 func (f *File) Secrets(key []byte) (map[string]string, error) {
 	return f.entries(key, f.Secret, entryAAD)
 }
 
 // DisabledSecrets opens the commented out entries the same way, so a vault
-// that holds any authenticates as a whole.
+// holding any authenticates as a whole.
 func (f *File) DisabledSecrets(key []byte) (map[string]string, error) {
 	return f.entries(key, f.Disabled, disabledAAD)
 }
@@ -193,8 +183,8 @@ func (f *File) entries(key []byte, table map[string]string, aad string) (map[str
 	return out, nil
 }
 
-// openEntry opens one sealed body and checks it is the entry its token
-// addresses, the check that makes a pasted or tampered body a refusal.
+// openEntry checks the body is the entry its token addresses, so a pasted
+// or tampered body is a refusal.
 func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 	plain, err := openValue(key, body, aad+tok)
 	if err != nil {
@@ -210,9 +200,8 @@ func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 	return string(name), string(value), nil
 }
 
-// Devices opens every device name and parses every public key, as pub to name.
-// A name that does not open means someone added a device entry behind the key,
-// which is exactly what a revocation or a rotation must not swallow.
+// Devices returns pub to name. A name that does not open means a device entry
+// was added behind the key, which rotation must not swallow.
 func (f *File) Devices(key []byte) (map[string]string, error) {
 	out := make(map[string]string, len(f.Device))
 	for pub, d := range f.Device {
@@ -231,8 +220,7 @@ func (f *File) Devices(key []byte) (map[string]string, error) {
 	return out, nil
 }
 
-// Set stores one value under the token its name derives to. An existing name
-// only rewrites its body, so every other entry stays put.
+// Set stores one value under the token its name derives to, rewriting only that body.
 func (f *File) Set(key []byte, name, value string) error {
 	if !ValidName(name) {
 		return fmt.Errorf("%w %q", ErrBadName, name)
@@ -249,8 +237,8 @@ func (f *File) Set(key []byte, name, value string) error {
 	return nil
 }
 
-// Disable comments one key out: the entry moves to the [disabled] table under
-// a seal of its own, so it stops loading into shells without being lost.
+// Disable moves the entry to the [disabled] table under a seal of its own,
+// so it stops loading without being lost.
 func (f *File) Disable(key []byte, name string) error {
 	tok := token(key, name)
 	body, ok := f.Secret[tok]
@@ -270,8 +258,8 @@ func (f *File) Disable(key []byte, name string) error {
 	return nil
 }
 
-// Enable stores one value under name and drops any disabled entry of the same
-// name, so an uncommented or overwritten key is back in the shell.
+// Enable drops any disabled entry of the same name, so an uncommented key is
+// back in the shell.
 func (f *File) Enable(key []byte, name, value string) error {
 	if err := f.Set(key, name, value); err != nil {
 		return err
@@ -293,14 +281,13 @@ func (f *File) Unset(key []byte, name string) error {
 	return nil
 }
 
-// AddDevice seals key to pub and records the device as name. Only this block
-// changes, no secret value is touched.
+// AddDevice records the device as name, no secret value is touched.
 func (f *File) AddDevice(key []byte, pub *ecdh.PublicKey, name string) error {
 	if !validDeviceName(name) {
 		return fmt.Errorf("%w %q", ErrBadName, name)
 	}
-	// Devices authenticates every entry first, so a name or wrap smuggled in
-	// outside the key is caught before anything is sealed to it.
+	// Devices authenticates every entry first, so a smuggled name or wrap is
+	// caught before anything is sealed to it.
 	devices, err := f.Devices(key)
 	if err != nil {
 		return err
@@ -309,8 +296,7 @@ func (f *File) AddDevice(key []byte, pub *ecdh.PublicKey, name string) error {
 	if _, ok := devices[want]; ok {
 		return fmt.Errorf("%w %s, already enrolled as %q", ErrDupDevice, want, devices[want])
 	}
-	// A taken name is never overwritten, that would revoke whatever device
-	// held it without a word.
+	// A taken name is never overwritten, that would revoke the device holding it without a word.
 	for _, other := range devices {
 		if other == name {
 			return fmt.Errorf("%w %q, pick another name or revoke it first", ErrDupName, name)
@@ -329,9 +315,8 @@ func (f *File) AddDevice(key []byte, pub *ecdh.PublicKey, name string) error {
 	return nil
 }
 
-// RemoveDevice drops pub from the vault. It is not retroactive: anyone who
-// already unsealed the vault key keeps it. Callers rotate right after, so a
-// removed device is cut off from the future too.
+// RemoveDevice is not retroactive: anyone who already unsealed the vault key
+// keeps it, callers rotate right after.
 func (f *File) RemoveDevice(pub string) error {
 	if _, ok := f.Device[pub]; !ok {
 		return fmt.Errorf("%w %q", ErrNoDevice, pub)
@@ -343,9 +328,8 @@ func (f *File) RemoveDevice(pub string) error {
 	return nil
 }
 
-// Rotate replaces the vault key, rewrapping every device and every value, and
-// seals the new key to a fresh recovery passphrase. Everything unauthenticated
-// aborts the rotation before the new key is ever wrapped to it.
+// Rotate rewraps every device and value under a new key, sealing it to a
+// fresh passphrase. Anything unauthenticated aborts first.
 func (f *File) Rotate(old []byte, passphrase string) ([]byte, error) {
 	devices, err := f.Devices(old)
 	if err != nil {

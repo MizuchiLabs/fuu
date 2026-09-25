@@ -20,10 +20,7 @@ var (
 	)
 )
 
-// vaultPath resolves the vault for the current directory. An explicit --vault
-// wins. Otherwise fuu looks for the nearest .fuu.toml up to and including the
-// git root, so a checkout is one vault and nothing outside the repository is
-// ever reached by walking upwards.
+// --vault wins, otherwise the nearest .fuu.toml up to and including the git root, never above it.
 func vaultPath(cmd *cli.Command) (string, error) {
 	if cmd.IsSet("vault") {
 		return cmd.String("vault"), nil
@@ -55,9 +52,7 @@ func findVault() (string, error) {
 	}
 }
 
-// repoVaultPath is where fuu init puts a new vault: the repository root, so
-// one checkout is one vault. Outside any repository it stays in the working
-// directory.
+// The repository root, so one checkout is one vault. Outside a repo it stays in the working directory.
 func repoVaultPath() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -76,9 +71,7 @@ func repoVaultPath() (string, error) {
 	}
 }
 
-// loadTrusted loads the vault and the fingerprint this machine trusts its
-// folder to hold. It touches no key material and no TPM, so a folder nobody
-// vouched for never reaches the chip.
+// Touches no key material and no TPM, so a folder nobody vouched for never reaches the chip.
 func loadTrusted(path string) (*vault.File, string, error) {
 	f, err := vault.Load(path)
 	if err != nil {
@@ -99,9 +92,7 @@ func loadTrusted(path string) (*vault.File, string, error) {
 	return f, pin, nil
 }
 
-// unsealPinned opens the vault key and checks it against what this folder is
-// pinned to. The pin is not proof on its own, it is what turns a vault key
-// swap into a loud refusal instead of a quiet reload.
+// The pin turns a vault key swap into a loud refusal instead of a quiet reload.
 func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, error) {
 	key, err := f.Unseal(dk)
 	if err != nil {
@@ -116,9 +107,6 @@ func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, error)
 	return key, nil
 }
 
-// openPinned is unlock for callers that already hold the path and the device
-// key, so a command body can run against a soft key in tests the way trust
-// does.
 func openPinned(path string, dk vault.DeviceKey) (*vault.File, []byte, error) {
 	f, pin, err := loadTrusted(path)
 	if err != nil {
@@ -131,9 +119,7 @@ func openPinned(path string, dk vault.DeviceKey) (*vault.File, []byte, error) {
 	return f, key, nil
 }
 
-// unlock opens the vault, unseals the vault key with this machine's device key
-// and reports this machine's public key. The device key is closed on the way
-// out, unsealing is all it is needed for.
+// The device key is closed on the way out, unsealing is all it is needed for.
 func unlock(cmd *cli.Command) (string, *vault.File, []byte, string, error) {
 	path, err := vaultPath(cmd)
 	if err != nil {

@@ -20,7 +20,7 @@ func openKey(t *testing.T) *Key {
 	return k
 }
 
-// TestKeyDeterministic verifies reopening on the same TPM derives the same key pair with nothing stored on disk.
+// Reopening on the same TPM derives the same key pair with nothing stored on disk.
 func TestKeyDeterministic(t *testing.T) {
 	k1 := openKey(t)
 	defer func() { _ = k1.Close() }()
@@ -33,7 +33,7 @@ func TestKeyDeterministic(t *testing.T) {
 	}
 }
 
-// TestKeyECDH verifies the TPM exchange equals the software one, so callers cannot tell where the device key lives.
+// The TPM exchange equals the software one, so callers cannot tell where the device key lives.
 func TestKeyECDH(t *testing.T) {
 	k := openKey(t)
 	defer func() { _ = k.Close() }()
@@ -59,7 +59,7 @@ func TestKeyECDH(t *testing.T) {
 	}
 }
 
-// TestKeyClose verifies Close flushes the handle, so a closed key answers nothing.
+// Close flushes the handle, so a closed key answers nothing.
 func TestKeyClose(t *testing.T) {
 	k := openKey(t)
 

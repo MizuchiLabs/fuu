@@ -43,16 +43,14 @@ const (
 	argon2Salt = 16     // random salt bytes
 )
 
-// DeviceKey is the ECDH P-256 exchange the device wrap needs. devkey.Key
-// satisfies it, and its second implementation lives in this package's tests.
+// DeviceKey is the ECDH P-256 exchange the device wrap needs. devkey.Key satisfies it.
 type DeviceKey interface {
 	Public() *ecdh.PublicKey
 	ECDH(peer *ecdh.PublicKey) ([]byte, error)
 }
 
-// token maps a key name to the stable opaque identifier the vault file stores
-// it under. Same vault key and same name always give the same token, so a diff
-// still shows which entry changed while the name stays out of the file.
+// token is the stable opaque identifier a name is stored under, so a diff shows
+// which entry changed while the name stays out of the file.
 func token(key []byte, name string) string {
 	return tokenOf(key, nameInfo+name)
 }
@@ -65,7 +63,7 @@ func tokenOf(key []byte, info string) string {
 }
 
 // wrapKey seals vaultKey to recipient under a fresh ephemeral P-256 keypair,
-// echoing the ephemeral point the recipient needs to redo the exchange.
+// echoing the point the recipient needs.
 func wrapKey(recipient *ecdh.PublicKey, vaultKey []byte) (ePub, body string, err error) {
 	if recipient == nil {
 		return "", "", errors.New("nil recipient")
@@ -165,7 +163,8 @@ func unwrapPassphrase(passphrase, salt, body string) ([]byte, error) {
 	return openBody(aead, body, []byte(recoveryAAD))
 }
 
-// sealValue seals one plaintext under the vault key, bound to the aad slot so a body cannot be moved from one entry to another.
+// sealValue seals one plaintext under the vault key, bound to its aad slot so
+// bodies cannot be swapped between entries.
 func sealValue(key, plaintext []byte, aad string) (string, error) {
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
@@ -174,7 +173,7 @@ func sealValue(key, plaintext []byte, aad string) (string, error) {
 	return sealBody(aead, plaintext, []byte(aad))
 }
 
-// openValue opens a value body with the vault key and the same aad it was sealed with. A wrong key, a tampered body or a body moved to another slot fails as an error and no plaintext.
+// openValue opens a body with the same aad it was sealed with, anything else fails as an error.
 func openValue(key []byte, body, aad string) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
@@ -183,7 +182,8 @@ func openValue(key []byte, body, aad string) ([]byte, error) {
 	return openBody(aead, body, []byte(aad))
 }
 
-// deriveWrappingKey is the ECIES key schedule of age-plugin-tpm, HKDF-SHA256 over the ECDH shared secret.
+// deriveWrappingKey is the ECIES key schedule of age-plugin-tpm, HKDF-SHA256
+// over the ECDH shared secret.
 func deriveWrappingKey(shared []byte, ephemeral, recipient *ecdh.PublicKey) ([]byte, error) {
 	salt := make([]byte, 0, 130)
 	// Binding both public points stops a substituted recipient from deriving the same wrapping key.

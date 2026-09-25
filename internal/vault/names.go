@@ -5,13 +5,9 @@ import (
 	"strings"
 )
 
-// shellHazards are variable names that reach past a plain secret once the hook
-// evals the export line: they run code or take the shell over. Matching is
-// case insensitive because zsh and fish tie a lower case alias to the real
-// thing (path to PATH, fpath to FPATH, prompt to PS1), so a secret named path
-// would hijack command resolution in zsh even though bash treats it as a plain
-// variable. The list is the price of eval integration. A name like one of
-// these is refused outright, it never enters the vault.
+// shellHazards run code or take the shell over once eval'd.
+// Matched case insensitively, zsh and fish alias lowercase names to the
+// real thing (path to PATH).
 var shellHazards = map[string]struct{}{
 	"BASHOPTS":              {},
 	"BASH_COMPAT":           {},
@@ -86,14 +82,12 @@ func shellHazard(name string) bool {
 }
 
 // ValidName reports whether name is safe to store and to emit as a shell
-// variable name, because fuu env is eval'd by the shell. A name that is not a
-// plain identifier, or that configures the shell itself, is refused.
+// variable, because fuu env is eval'd.
 func ValidName(name string) bool {
 	return identName(name) && !shellHazard(name)
 }
 
-// identName is the shell identifier rule: what the shell would parse as one
-// assignment word, no more.
+// identName is what the shell parses as one assignment word, no more.
 func identName(name string) bool {
 	if name == "" {
 		return false
@@ -110,8 +104,7 @@ func identName(name string) bool {
 	return true
 }
 
-// validDeviceName is what a device may be called: hostnames with dots and
-// dashes have to pass, and nothing longer or stranger than that.
+// validDeviceName allows hostnames with dots and dashes, nothing longer or stranger.
 func validDeviceName(name string) bool {
 	if len(name) < 1 || len(name) > 64 {
 		return false

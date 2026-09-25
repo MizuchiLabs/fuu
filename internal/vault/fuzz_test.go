@@ -7,9 +7,8 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// FuzzParse feeds hostile bytes to the vault parser, the one place an attacker
-// controlled .fuu.toml enters the tool. A malformed file must fail as an error
-// that carries no vault, never a panic.
+// The one place an attacker controlled .fuu.toml enters, a malformed file must
+// fail as an error, never a panic.
 func FuzzParse(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte("not toml at all"))
@@ -28,9 +27,7 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
-// FuzzEphemeralPoint feeds hostile base64 and point encodings to the ephemeral
-// public key parser. A malformed or off curve key must fail as an error that
-// carries no key, never a panic.
+// A malformed or off curve key must fail as an error, never a panic.
 func FuzzEphemeralPoint(f *testing.F) {
 	f.Add("")
 	f.Add("not-base64!!")
@@ -42,9 +39,7 @@ func FuzzEphemeralPoint(f *testing.F) {
 	})
 }
 
-// FuzzOpenBody feeds hostile bodies to the envelope opener. A wrong key, a
-// truncated body or a tampered tag must fail as an error that carries no
-// plaintext, never a panic.
+// A wrong key, a truncated body or a tampered tag must fail as an error, never a panic.
 func FuzzOpenBody(f *testing.F) {
 	aead, err := chacha20poly1305.NewX(make([]byte, chacha20poly1305.KeySize))
 	if err != nil {

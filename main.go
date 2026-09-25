@@ -30,8 +30,7 @@ func main() {
 	}
 }
 
-// present keeps the deepest message and anything a wrapper appended after it,
-// like hint lines, and drops the chain of context prefixes on the way there.
+// Keeps the deepest message and appended hint lines, drops the context prefixes.
 func present(err error) string {
 	inner := errors.Unwrap(err)
 	if inner == nil {

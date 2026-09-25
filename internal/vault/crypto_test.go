@@ -15,7 +15,7 @@ func vaultKey(t *testing.T) []byte {
 	return key
 }
 
-// TestKeyWrapRoundTrip verifies only the target chip opens a device wrap.
+// Only the target chip opens a device wrap.
 func TestKeyWrapRoundTrip(t *testing.T) {
 	recipient, stranger := newSoftKey(t), newSoftKey(t)
 	key := vaultKey(t)
@@ -36,8 +36,7 @@ func TestKeyWrapRoundTrip(t *testing.T) {
 	}
 }
 
-// TestValueBoundToSlot verifies a body cut from one entry cannot be pasted
-// into another.
+// A body cut from one entry cannot be pasted into another.
 func TestValueBoundToSlot(t *testing.T) {
 	key := vaultKey(t)
 

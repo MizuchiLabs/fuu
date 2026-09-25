@@ -9,19 +9,20 @@ import (
 	"github.com/google/go-tpm/tpm2/transport"
 )
 
-// deviceSalt is the domain separator for the primary derivation. CreatePrimary is a pure function of owner seed plus
-// inSensitive plus inPublic, so any two apps that pick the same salt and template silently share one private key.
-// The module path keeps it globally unique, and the vN must be bumped whenever the template or this call changes.
+// deviceSalt is the domain separator for the derivation. CreatePrimary is a
+// pure function of owner seed, salt and template, so two apps picking the
+// same salt silently share one private key. The module path keeps it unique,
+// and vN bumps when the template changes.
 const deviceSalt = "github.com/mizuchilabs/fuu/v1/device"
 
-// primaryKey is a loaded deterministic primary, a handle inside the TPM plus its parsed public key.
+// primaryKey is a loaded deterministic primary.
 type primaryKey struct {
 	hnd  tpm2.TPMHandle
 	name tpm2.TPM2BName
 	pub  *ecdh.PublicKey
 }
 
-// Available reports whether a TPM 2.0 device can be opened on this machine, carrying the reason when it cannot.
+// Available reports whether a TPM 2.0 device can be opened on this machine.
 func Available() error {
 	dev, err := openTPMDevice()
 	if err != nil {
@@ -30,7 +31,8 @@ func Available() error {
 	return dev.Close()
 }
 
-// eccECDHTemplate is the fixed template mixed into the derivation, with no auth value and no PCR policy so control of the TPM device file is the access control.
+// eccECDHTemplate has no auth value and no PCR policy, control of the
+// TPM device file is the access control.
 func eccECDHTemplate() tpm2.TPMTPublic {
 	return tpm2.TPMTPublic{
 		Type:    tpm2.TPMAlgECC,
@@ -65,7 +67,8 @@ func eccECDHTemplate() tpm2.TPMTPublic {
 	}
 }
 
-// createPrimary derives the primary key from the owner seed, the fixed salt and the template, persisting nothing because reopening reproduces the key pair until the owner seed changes.
+// createPrimary persists nothing, reopening reproduces the key pair until
+// the owner seed changes.
 func createPrimary(r transport.TPM) (*primaryKey, error) {
 	rsp, err := tpm2.CreatePrimary{
 		PrimaryHandle: tpm2.TPMRHOwner,
@@ -88,7 +91,8 @@ func createPrimary(r transport.TPM) (*primaryKey, error) {
 	return &primaryKey{hnd: rsp.ObjectHandle, name: rsp.Name, pub: pub}, nil
 }
 
-// ecdhZGen runs TPM2_ECDHZGen and returns the X coordinate in the same fixed width form crypto/ecdh uses, so a TPM key and a software key are interchangeable to callers.
+// ecdhZGen returns the X coordinate in the fixed width form crypto/ecdh uses,
+// so TPM and software keys are interchangeable.
 func ecdhZGen(r transport.TPM, key *primaryKey, peer *ecdh.PublicKey) ([]byte, error) {
 	// FillBytes panics on a coordinate wider than 32 bytes, so only a P-256 peer may reach it.
 	if peer == nil || peer.Curve() != ecdh.P256() {
@@ -125,7 +129,7 @@ func ecdhZGen(r transport.TPM, key *primaryKey, peer *ecdh.PublicKey) ([]byte, e
 	return shared, nil
 }
 
-// publicToECDH converts a TPM2BPublic into a [ecdh.PublicKey] via tpm2.ECDHPub so callers never parse the wire form themselves.
+// publicToECDH turns a TPM2BPublic into a [ecdh.PublicKey] so callers never parse the wire form.
 func publicToECDH(pub tpm2.TPM2BPublic) (*ecdh.PublicKey, error) {
 	tp, err := pub.Contents()
 	if err != nil {

@@ -10,9 +10,6 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// scriptEditor writes an executable editor script that runs body against the
-// buffer fuu hands it, so a test can type into the editor the way an operator
-// would.
 func scriptEditor(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "editor")
@@ -23,17 +20,14 @@ func scriptEditor(t *testing.T, body string) string {
 	return path
 }
 
-// useEditor points fuu at a script editor, clearing VISUAL so EDITOR is the
-// one that counts.
+// Clears VISUAL so EDITOR is the one that counts.
 func useEditor(t *testing.T, body string) {
 	t.Helper()
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", scriptEditor(t, body))
 }
 
-// pinnedVault writes a vault holding API_KEY and DATABASE_URL, pins its
-// folder the way a fuu trust would and leaves the operator standing in none
-// of the places edit needs, since edit takes the path itself.
+// A vault with API_KEY and DATABASE_URL, pinned the way a fuu trust would.
 func pinnedVault(t *testing.T) (path string, key []byte, dk *softKey) {
 	t.Helper()
 	isolatePins(t)
@@ -63,8 +57,7 @@ func pinnedVault(t *testing.T) (path string, key []byte, dk *softKey) {
 	return path, key, dk
 }
 
-// TestParseCommented pins the prose rule: only a name the vault already holds
-// counts as commented out, and only a whole line starting with the hash.
+// Only whole hash lines naming a known key count as commented out.
 func TestParseCommented(t *testing.T) {
 	raw := []byte(`# save and close to write the changes back
 API_KEY = "new"
@@ -82,9 +75,7 @@ API_KEY = "new"
 	}
 }
 
-// TestEditCommentsOutAndBack is the sops style round trip: a commented line
-// keeps its value in the vault and out of the shell, uncommenting brings it
-// back, and the file version follows the table.
+// A commented line keeps its value in the vault and out of the shell, uncommenting brings it back.
 func TestEditCommentsOutAndBack(t *testing.T) {
 	path, key, dk := pinnedVault(t)
 
@@ -141,8 +132,7 @@ func TestEditCommentsOutAndBack(t *testing.T) {
 	}
 }
 
-// TestEditDropsCommentedKey keeps the old meaning of deletion for commented
-// lines: the line gone from the buffer is the key gone from the vault.
+// The line gone from the buffer is the key gone from the vault.
 func TestEditDropsCommentedKey(t *testing.T) {
 	path, key, dk := pinnedVault(t)
 

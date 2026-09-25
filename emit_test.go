@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// captureOutput swaps the process stdout for a pipe while f runs. The emitters
-// print there on purpose, that stream is what the shell evals.
+// Swaps stdout for a pipe, that stream is what the shell evals.
 func captureOutput(t *testing.T, f func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -31,8 +30,6 @@ func captureOutput(t *testing.T, f func()) string {
 	return string(out)
 }
 
-// unquoteSh reads back a string shQuote produced: single quoted segments
-// joined by an escaped quote, the grammar POSIX shells parse.
 func unquoteSh(t *testing.T, q string) string {
 	t.Helper()
 	var b strings.Builder
@@ -60,8 +57,6 @@ func unquoteSh(t *testing.T, q string) string {
 	return b.String()
 }
 
-// unquoteFish reads back a string fishQuote produced: one single quoted run
-// where backslash escapes only the backslash and the quote itself.
 func unquoteFish(t *testing.T, q string) string {
 	t.Helper()
 	if len(q) < 2 || q[0] != '\'' || q[len(q)-1] != '\'' {
@@ -90,8 +85,6 @@ func unquoteFish(t *testing.T, q string) string {
 	return b.String()
 }
 
-// quoteCases are the shapes quoting has to survive: quotes, newlines,
-// backslashes and shell metacharacters.
 var quoteCases = []string{
 	"plain",
 	"it's",
@@ -179,8 +172,7 @@ func TestEmitterUnset(t *testing.T) {
 	if got := captureOutput(t, func() { posix.unset("API_KEY") }); got != "unset API_KEY\n" {
 		t.Errorf("unset = %q", got)
 	}
-	// A name that configures the shell never reaches the eval, not even for
-	// cleanup, and neither does shell syntax smuggled through FUU_LOADED.
+	// A name that configures the shell never reaches the eval, not even for cleanup.
 	for _, name := range []string{"PATH", "EVIL; rm"} {
 		if got := captureOutput(t, func() { posix.unset(name) }); got != "" {
 			t.Errorf("unset(%q) = %q, want silence", name, got)
@@ -191,9 +183,7 @@ func TestEmitterUnset(t *testing.T) {
 	}
 }
 
-// TestUnload pins what the hook sources when there is no vault to load: every
-// name the shell still holds, then the hook's own state, and no output at all
-// for a shell that never loaded anything.
+// Nothing at all is sourced for a shell that never loaded anything.
 func TestUnload(t *testing.T) {
 	posix := emitter{}
 	fish := emitter{fish: true}

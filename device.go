@@ -15,7 +15,6 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// cmdInit creates the vault, enrolls this machine and pins the folder.
 func cmdInit(_ context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if errors.Is(err, errNoVault) {
@@ -61,9 +60,8 @@ func cmdInit(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// rotateAndSave replaces the vault key, saves the vault and shows the new
-// recovery passphrase. Removing a device always goes through here: removal
-// without a new key revokes nothing, the old key is still out there.
+// Device removal goes through here: without a new key the old one is still out
+// there and revokes nothing.
 func rotateAndSave(path string, f *vault.File, key []byte) error {
 	pass := rand.Text()
 	newKey, err := f.Rotate(key, pass)
@@ -84,7 +82,6 @@ func rotateAndSave(path string, f *vault.File, key []byte) error {
 	return savePins(pins)
 }
 
-// cmdRotate replaces the vault key and rewraps everything under it.
 func cmdRotate(_ context.Context, cmd *cli.Command) error {
 	path, f, key, _, err := unlock(cmd)
 	if err != nil {
@@ -93,7 +90,6 @@ func cmdRotate(_ context.Context, cmd *cli.Command) error {
 	return rotateAndSave(path, f, key)
 }
 
-// cmdDeviceLs lists the enrolled chips by name, marking this machine.
 func cmdDeviceLs(_ context.Context, cmd *cli.Command) error {
 	_, f, key, self, err := unlock(cmd)
 	if err != nil {
@@ -125,8 +121,7 @@ func cmdDeviceLs(_ context.Context, cmd *cli.Command) error {
 
 type row struct{ name, pub string }
 
-// cmdDeviceRm removes a device and rotates the vault key, so the removed
-// device is cut off from every future value too.
+// Rotates the vault key too, so the removed device is cut off from future values.
 func cmdDeviceRm(_ context.Context, cmd *cli.Command) error {
 	name := cmd.Args().Get(0)
 	if name == "" {
@@ -161,8 +156,6 @@ func cmdDeviceRm(_ context.Context, cmd *cli.Command) error {
 	return rotateAndSave(path, f, key)
 }
 
-// deviceName is the name for this machine: what the caller said, or the
-// hostname.
 func deviceName(cmd *cli.Command) string {
 	if name := cmd.String("name"); name != "" {
 		return name

@@ -18,10 +18,8 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// cmdTrust is the one command that accepts a vault key this machine has not
-// vouched for yet, and the one that enrolls this machine into a vault. There
-// is no trust on first use anywhere else: every other command refuses a folder
-// nobody pinned.
+// The only command that accepts a vault key this machine has not vouched for
+// yet, everywhere else there is no trust on first use.
 func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if err != nil {
@@ -37,10 +35,8 @@ func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	return trust(path, dk, deviceName(cmd))
 }
 
-// trust accepts the vault at path for this folder and enrolls this machine
-// when it is not in yet. Proving the file always takes the recovery
-// passphrase, unless the vault key is already pinned somewhere on this
-// machine and the operator says the two are the same vault.
+// Proving the file takes the recovery passphrase, unless this vault key is
+// already pinned elsewhere and the operator agrees.
 func trust(path string, dk vault.DeviceKey, name string) error {
 	f, err := vault.Load(path)
 	if err != nil {
@@ -67,9 +63,7 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 			fmt.Println("already trusted")
 			return nil
 		}
-		// The same vault key is already pinned to another folder, so this is
-		// a second checkout of it rather than a new vault. One word from the
-		// operator is enough, no passphrase round trip.
+		// A second checkout of an already pinned vault, one word from the operator is enough.
 		if other, ok := pinnedElsewhere(pins, dir, fp); ok {
 			same, err := confirm(fmt.Sprintf("this is the same vault as %s, load it in %s too", other, dir))
 			if err != nil {
@@ -134,10 +128,8 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 	return nil
 }
 
-// trustedPath names this machine's record of which folders hold a vault it
-// trusts, mapped to the fingerprint of the vault key inside. It lives outside
-// the vault on purpose: trust anchors read out of the file being verified
-// would let anyone who can write the file mint a self certified one.
+// Lives outside the vault on purpose: a trust anchor read from the file it
+// verifies proves nothing.
 func trustedPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -146,7 +138,6 @@ func trustedPath() (string, error) {
 	return filepath.Join(dir, "fuu", "trusted.toml"), nil
 }
 
-// loadPins reads the folder to fingerprint map, empty when there is none.
 func loadPins() (map[string]string, error) {
 	path, err := trustedPath()
 	if err != nil {
@@ -166,8 +157,7 @@ func loadPins() (map[string]string, error) {
 	return pins, nil
 }
 
-// savePins writes the pin map sorted, so an unchanged write stays byte
-// identical and WriteIfChanged leaves it alone.
+// Sorted so an unchanged write stays byte identical and WriteIfChanged leaves it alone.
 func savePins(pins map[string]string) error {
 	path, err := trustedPath()
 	if err != nil {
@@ -187,9 +177,7 @@ func savePins(pins map[string]string) error {
 	return nil
 }
 
-// repin moves every folder pinned to from over to to. One vault key per folder
-// is what a rotation or a recovery changes, and every folder of that vault
-// moves with it.
+// Rotation changes one vault key, and every folder of that vault moves with it.
 func repin(pins map[string]string, from, to string) {
 	for dir, fp := range pins {
 		if fp == from {
@@ -198,7 +186,6 @@ func repin(pins map[string]string, from, to string) {
 	}
 }
 
-// pinnedElsewhere reports which other folder already trusts this vault key.
 func pinnedElsewhere(pins map[string]string, dir, fp string) (string, bool) {
 	for _, other := range slices.Sorted(maps.Keys(pins)) {
 		if other != dir && pins[other] == fp {
@@ -208,14 +195,13 @@ func pinnedElsewhere(pins map[string]string, dir, fp string) (string, bool) {
 	return "", false
 }
 
-// vaultDir is the folder a vault is loaded from, the unit trust is granted to.
 func vaultDir(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("trust: %w", err)
 	}
-	// Symlinked checkouts are one place, so resolve the folder. The vault
-	// itself may still be being created, so only the directory is resolved.
+	// Symlinked checkouts are one place, so resolve the folder, but only the
+	// directory, the vault may still be being created.
 	if resolved, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
 		return resolved, nil
 	}

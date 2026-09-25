@@ -31,8 +31,7 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 			"set: a value on the command line stays in the process list and shell history, pipe it or leave it out to be prompted",
 		)
 	case !term.IsTerminal(int(os.Stdin.Fd())):
-		// A piped value keeps newlines and leading dashes, which argv cannot do
-		// since anything starting with a dash reads as a flag.
+		// A piped value keeps newlines and leading dashes, which argv cannot do.
 		all, err := io.ReadAll(stdin)
 		if err != nil {
 			return fmt.Errorf("set: %w", err)
@@ -48,8 +47,7 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// Enable rather than Set: writing a value for a commented out key brings
-	// it back, a fresh name is unaffected.
+	// Enable rather than Set: writing a value for a commented out key brings it back.
 	if err := f.Enable(key, name, value); err != nil {
 		return err
 	}
@@ -97,8 +95,7 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("%w %q", vault.ErrNoKey, name)
 	}
 	value := values[name]
-	// Pipes and redirects get the exact bytes. A terminal gets a newline too
-	// so the prompt keeps its own line.
+	// A terminal gets a trailing newline so the prompt keeps its own line.
 	if term.IsTerminal(int(os.Stdout.Fd())) && !strings.HasSuffix(value, "\n") {
 		value += "\n"
 	}
@@ -136,8 +133,7 @@ func cmdLs(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// secretName takes the <KEY> argument and checks it before the TPM or the
-// vault is touched.
+// Checks the name before the TPM or the vault is touched.
 func secretName(cmd *cli.Command, usage string) (string, error) {
 	name := cmd.Args().Get(0)
 	if name == "" {

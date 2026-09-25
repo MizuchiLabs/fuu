@@ -47,8 +47,7 @@ func newFixture(t *testing.T) (f *File, dk *softKey, key []byte) {
 	return f, dk, key
 }
 
-// TestRoundTrip is the open path the shell hook uses, with values that need
-// quoting to survive in a shell at all.
+// The open path the shell hook uses, with values that need quoting to survive in a shell.
 func TestRoundTrip(t *testing.T) {
 	f, dk, key := newFixture(t)
 	if err := f.Set(key, "QUOTED", "line one\nit's \"fine\""); err != nil {
@@ -81,8 +80,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFileHidesNames is the point of the format: nothing in the readable bytes
-// reveals what the vault holds or whose chips are enrolled.
+// The point of the format: nothing in the readable bytes reveals what the vault holds.
 func TestFileHidesNames(t *testing.T) {
 	f, _, _ := newFixture(t)
 
@@ -98,9 +96,7 @@ func TestFileHidesNames(t *testing.T) {
 	}
 }
 
-// TestSecretsRefusesSwappedBodies covers swapping two entries in the file: the
-// body carries its token as additional data, so it will not open pasted into
-// another entry.
+// The body carries its token as additional data, so it will not open pasted into another entry.
 func TestSecretsRefusesSwappedBodies(t *testing.T) {
 	f, _, key := newFixture(t)
 
@@ -113,10 +109,7 @@ func TestSecretsRefusesSwappedBodies(t *testing.T) {
 	}
 }
 
-// TestForeignDeviceRefused is the attack fuu must not swallow: someone with
-// repo write access adds a device entry of their own, and the next rotation
-// would seal the new key to it. The entry cannot carry a name under the vault
-// key, so that is what gives it away before anything is wrapped to it.
+// Someone with repo write access adds a device entry of their own, and the next rotation would seal the new key to it.
 func TestForeignDeviceRefused(t *testing.T) {
 	f, _, key := newFixture(t)
 
@@ -139,8 +132,7 @@ func TestForeignDeviceRefused(t *testing.T) {
 	}
 }
 
-// TestRotateRewraps verifies a rotated vault opens for the same device under
-// the new key, keeps every value, and moves recovery to the new passphrase.
+// A rotated vault keeps every value and moves recovery to the new passphrase.
 func TestRotateRewraps(t *testing.T) {
 	f, dk, key := newFixture(t)
 
@@ -174,7 +166,6 @@ func TestRotateRewraps(t *testing.T) {
 	}
 }
 
-// TestRemoveLastDeviceIsRefused keeps the vault from losing its last device.
 func TestRemoveLastDeviceIsRefused(t *testing.T) {
 	f, dk, _ := newFixture(t)
 
@@ -186,8 +177,7 @@ func TestRemoveLastDeviceIsRefused(t *testing.T) {
 	}
 }
 
-// TestSaveConflict covers both writers losing: a vault that would overwrite an
-// existing file and a save that raced with another machine's write.
+// Both writers losing: overwriting an existing file, and a save racing another machine.
 func TestSaveConflict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
 	f, _, key := newFixture(t)
@@ -220,7 +210,6 @@ func TestSaveConflict(t *testing.T) {
 	}
 }
 
-// TestWrongPassphraseFails is the whole recovery barrier.
 func TestWrongPassphraseFails(t *testing.T) {
 	f, _, _ := newFixture(t)
 
@@ -229,8 +218,7 @@ func TestWrongPassphraseFails(t *testing.T) {
 	}
 }
 
-// TestValidName guards the eval the shell hook runs the output through, and
-// the names that would take the shell over.
+// Names that would take the shell over once the hook evals the export line.
 func TestValidName(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -273,9 +261,7 @@ func TestValidDeviceName(t *testing.T) {
 	}
 }
 
-// TestDisableKeepsEntry is the comment out contract: the value leaves the
-// shell's map, survives under DisabledSecrets, and comes back on Enable with
-// the file version tracking the table's presence.
+// The comment out contract: the value leaves the shell's map and survives under DisabledSecrets.
 func TestDisableKeepsEntry(t *testing.T) {
 	f, _, key := newFixture(t)
 
@@ -349,8 +335,7 @@ func TestDisableKeepsEntry(t *testing.T) {
 	}
 }
 
-// TestUnsetDropsDisabled covers deleting a commented out key: it leaves both
-// tables, not just the visible one.
+// Deleting a commented out key leaves both tables, not just the visible one.
 func TestUnsetDropsDisabled(t *testing.T) {
 	f, _, key := newFixture(t)
 	if err := f.Disable(key, "API_KEY"); err != nil {
@@ -367,9 +352,7 @@ func TestUnsetDropsDisabled(t *testing.T) {
 	}
 }
 
-// TestDisabledBodyRefusesTableMove covers pasting a disabled body back into
-// the [secret] table: the body is sealed to the slot it belongs to, so
-// uncommenting through the file rather than fuu edit is a refusal.
+// A disabled body pasted back into [secret] is a refusal, it is sealed to the slot it belongs to.
 func TestDisabledBodyRefusesTableMove(t *testing.T) {
 	f, _, key := newFixture(t)
 	if err := f.Disable(key, "API_KEY"); err != nil {
@@ -384,8 +367,7 @@ func TestDisabledBodyRefusesTableMove(t *testing.T) {
 	}
 }
 
-// TestRotateKeepsDisabled verifies a rotation rewraps commented out entries
-// too, under the disabled slot of the new key.
+// A rotation rewraps commented out entries too, under the disabled slot of the new key.
 func TestRotateKeepsDisabled(t *testing.T) {
 	f, dk, key := newFixture(t)
 	if err := f.Disable(key, "API_KEY"); err != nil {
@@ -414,8 +396,7 @@ func TestRotateKeepsDisabled(t *testing.T) {
 	}
 }
 
-// TestParseRefusesUnknownVersion keeps a future format loud: this build says
-// what it reads and nothing else sneaks past.
+// This build reads its own format version and nothing else.
 func TestParseRefusesUnknownVersion(t *testing.T) {
 	if _, err := Parse([]byte("version = 3\n")); !errors.Is(err, errBadVersion) {
 		t.Fatalf("Parse of version 3 = %v, want errBadVersion", err)

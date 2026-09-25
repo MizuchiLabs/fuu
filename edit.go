@@ -19,9 +19,7 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// cmdEdit opens this vault's secrets in $EDITOR and writes back only what
-// changed. The buffer is TOML so values with quotes or newlines survive a
-// round trip exactly.
+// The buffer is TOML, so values with quotes or newlines survive the round trip.
 func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if err != nil {
@@ -61,9 +59,8 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 	maps.Copy(known, beforeOff)
 	off := parseCommented(raw, known)
 
-	// An empty buffer is far more likely a botched edit than a real intention,
-	// so dropping every key takes one extra word instead of being refused.
-	// Commenting every key out is not that: nothing is lost, so it goes ahead.
+	// An empty buffer is more likely a botched edit, so dropping every key
+	// takes a confirmation.
 	if len(edited) == 0 && len(known) > 0 && len(off) == 0 {
 		ok, err := confirm("drop every key in this vault")
 		if err != nil {
@@ -106,9 +103,8 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 		return nil
 	}
 
-	// The editor ran outside any lock, so re-open the vault and apply only the
-	// diff to whatever is on disk now. A write from another shell during the
-	// edit survives, only the names this edit actually touched are moved.
+	// No lock was held during the edit, so apply just the diff to the file as
+	// it is now, a write from another shell survives.
 	f, key, err = openPinned(path, dk)
 	if err != nil {
 		return err
@@ -141,29 +137,28 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 	if err := f.Save(path); err != nil {
 		return err
 	}
-	// Names entering or leaving the shell belong to the hook, which names
-	// them at the next prompt. Only a moved value has no other speaker.
+	// Only moved values are printed, the hook announces added and removed names
+	// at the next prompt.
 	for _, name := range changed {
 		fmt.Println("~", name)
 	}
 	return nil
 }
 
-// runEditor shows the values as TOML in the user's editor and returns the
-// result. Commented out keys come along as commented lines, so uncommenting
-// one is all it takes to bring it back.
+// Commented out keys come along as commented lines, uncommenting one brings it back.
 //
-//nolint:gosec // G204: the editor is whatever the user configured. G703: the buffer paths come from a fresh temp dir under the operator's own XDG_RUNTIME_DIR, not from anything a repo supplies.
+// the editor is whatever the user configured and the buffer paths come from a
+// fresh temp dir under the operator's own XDG_RUNTIME_DIR.
+//
+//nolint:gosec // G204, G703
 func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte, error) {
 	argv := strings.Fields(editor())
 	if len(argv) == 0 {
 		return nil, errors.New("edit: set $EDITOR or $VISUAL")
 	}
 
-	// The buffer holds the vault's secrets in plaintext, so it goes on the
-	// per-user runtime dir where there is one, and the whole directory is
-	// dropped rather than one file: editors leave swap and backup copies next
-	// to it.
+	// Secrets in plaintext, so use the runtime dir and drop the whole
+	// directory, editors leave swap files behind.
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	tmp, err := os.MkdirTemp(dir, "fuu-edit-")
 	if err != nil {
@@ -210,8 +205,7 @@ func editor() string {
 	return os.Getenv("EDITOR")
 }
 
-// parseValues reads back what runEditor wrote, with the same name guard the
-// emitters use since this is still headed for eval.
+// Same name guard as the emitters, this output is still headed for eval.
 func parseValues(raw []byte) (map[string]string, error) {
 	values := map[string]string{}
 	if err := toml.Unmarshal(raw, &values); err != nil {
@@ -225,9 +219,7 @@ func parseValues(raw []byte) (map[string]string, error) {
 	return values, nil
 }
 
-// parseCommented reads back which known names the operator commented out.
-// Only a name the vault already holds counts, every other comment is prose
-// and lands nowhere.
+// Only names the vault already holds count as commented out, every other comment is prose.
 func parseCommented(raw []byte, known map[string]string) map[string]struct{} {
 	off := make(map[string]struct{})
 	for line := range strings.SplitSeq(string(raw), "\n") {

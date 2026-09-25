@@ -18,7 +18,6 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// testPass is the recovery passphrase the fixtures seal their vault keys to.
 const testPass = "open sesame"
 
 type softKey struct{ key *ecdh.PrivateKey }
@@ -38,15 +37,13 @@ func (k *softKey) Public() *ecdh.PublicKey { return k.key.PublicKey() }
 
 func (k *softKey) ECDH(peer *ecdh.PublicKey) ([]byte, error) { return k.key.ECDH(peer) }
 
-// isolatePins points the pin store at a temp dir so tests never touch the real
-// trust anchors.
+// Points the pin store at a temp dir so tests never touch the real trust anchors.
 func isolatePins(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 }
 
-// writeVault builds a vault with laptop enrolled and saves it at path,
-// handing back the vault key and the device key.
+// A vault with the laptop device enrolled, saved at path.
 func writeVault(t *testing.T, path string) ([]byte, *softKey) {
 	t.Helper()
 	dk := newSoftKey(t)
@@ -60,14 +57,12 @@ func writeVault(t *testing.T, path string) ([]byte, *softKey) {
 	return key, dk
 }
 
-// feedStdin answers every prompt and confirm from a fixed script.
 func feedStdin(t *testing.T, script string) {
 	t.Helper()
 	stdin = bufio.NewReader(strings.NewReader(script))
 }
 
-// TestLoadTrustedUnpinned covers the refusal a clone meets before anything
-// else: no pin for this folder, no TPM access, no trust on first use.
+// The refusal a clone meets first: no pin for this folder, no trust on first use.
 func TestLoadTrustedUnpinned(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -78,9 +73,7 @@ func TestLoadTrustedUnpinned(t *testing.T) {
 	}
 }
 
-// TestUnsealPinned covers both halves of the pin check: the key it was pinned
-// to opens, and a vault holding another key under the same device is a loud
-// refusal rather than a quiet reload.
+// A vault holding another key under the same device is a loud refusal, not a quiet reload.
 func TestUnsealPinned(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -99,8 +92,7 @@ func TestUnsealPinned(t *testing.T) {
 		t.Fatal("unsealPinned did not return the vault key")
 	}
 
-	// The file replaced by a vault that wraps a different key to the same
-	// soft device key.
+	// Replace the file with a vault that wraps a different key to the same device.
 	other, _, err := vault.New(dk, "laptop", testPass)
 	if err != nil {
 		t.Fatalf("vault.New: %v", err)
@@ -122,8 +114,7 @@ func TestUnsealPinned(t *testing.T) {
 	}
 }
 
-// TestTrustEnrollsDevice is the join path: the recovery passphrase is the
-// proof, then this machine gets a wrap of its own and the folder is pinned.
+// The join path: the recovery passphrase is the proof, then this machine gets a wrap and a pin.
 func TestTrustEnrollsDevice(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -164,8 +155,7 @@ func TestTrustEnrollsDevice(t *testing.T) {
 	}
 }
 
-// TestTrustWrongPassphrase leaves everything untouched: no enrollment, no
-// pin, not one byte of the file.
+// Leaves everything untouched: no enrollment, no pin, not one byte of the file.
 func TestTrustWrongPassphrase(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -189,9 +179,7 @@ func TestTrustWrongPassphrase(t *testing.T) {
 	}
 }
 
-// TestTrustTamperedDeviceWrap covers a file where this machine's wrap was
-// swapped for one holding another key: the device half opens, the recovery
-// half says otherwise, and trust refuses before recording anything.
+// A wrap swapped for one holding another key: trust refuses before recording anything.
 func TestTrustTamperedDeviceWrap(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -229,8 +217,7 @@ func TestTrustTamperedDeviceWrap(t *testing.T) {
 	}
 }
 
-// TestTrustSameVaultSecondFolder covers the second checkout of a vault this
-// machine already trusts: one word is enough, no passphrase round trip.
+// The second checkout of a vault this machine already trusts: one word is enough, no passphrase round trip.
 func TestTrustSameVaultSecondFolder(t *testing.T) {
 	isolatePins(t)
 	pathA := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -253,8 +240,7 @@ func TestTrustSameVaultSecondFolder(t *testing.T) {
 		t.Fatalf("vaultDir: %v", err)
 	}
 
-	// Anything but a yes answer to the confirm would abort, so this script
-	// passing proves no passphrase was asked for.
+	// Anything but a yes would abort, so this script passing proves no passphrase was asked for.
 	feedStdin(t, "y\n")
 	if err := trust(pathB, dk, "laptop"); err != nil {
 		t.Fatalf("trust of the second folder: %v", err)
@@ -268,9 +254,7 @@ func TestTrustSameVaultSecondFolder(t *testing.T) {
 	}
 }
 
-// TestEnvReportsRefusalOnce pins what an operator sees from the every-prompt
-// hook: a folder this machine has not trusted is reported once, then the shell
-// hears nothing until the situation actually changes.
+// An untrusted folder is reported once, then the shell hears nothing until the situation changes.
 func TestEnvReportsRefusalOnce(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -322,9 +306,7 @@ func TestEnvReportsRefusalOnce(t *testing.T) {
 	}
 }
 
-// TestAnnounce checks what reaches the terminal when names move: the moved
-// names are said out loud, and a state the shell already holds says nothing.
-// The exact wording is not the contract, so nothing here pins it.
+// Moved names are said out loud, a held state says nothing, and the exact wording is not the contract.
 func TestAnnounce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

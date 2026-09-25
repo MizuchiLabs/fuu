@@ -1,4 +1,4 @@
-// Package devkey is this machine's TPM-resident ECDH P-256 identity, derived fresh from the owner seed on every open so nothing is ever persisted, with no software fallback when no TPM can be opened.
+// Package devkey is this machine's TPM-resident ECDH P-256 identity, derived fresh on every open and never persisted, with no software fallback.
 package devkey
 
 import (
@@ -18,7 +18,8 @@ type Key struct {
 	mu  sync.Mutex
 }
 
-// Open derives this machine's device key, and a missing or unusable TPM is a hard error rather than a fallback.
+// Open derives this machine's device key. A missing or unusable TPM is a
+// hard error, never a fallback.
 func Open() (*Key, error) {
 	dev, err := openTPMDevice()
 	if err != nil {
@@ -36,7 +37,8 @@ func (k *Key) Public() *ecdh.PublicKey {
 	return k.key.pub
 }
 
-// ECDH multiplies the device key by peer inside the TPM and returns the shared X coordinate.
+// ECDH multiplies the device key by peer inside the TPM and returns the
+// shared X coordinate.
 func (k *Key) ECDH(peer *ecdh.PublicKey) ([]byte, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
