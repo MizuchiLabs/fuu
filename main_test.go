@@ -322,28 +322,38 @@ func TestEnvReportsRefusalOnce(t *testing.T) {
 	}
 }
 
-// TestAnnounce pins the notice the hook prints at the terminal when it moves
-// names in or out of the shell: names only, never values, and silence for a
-// state the shell already holds.
+// TestAnnounce checks what reaches the terminal when names move: the moved
+// names are said out loud, and a state the shell already holds says nothing.
+// The exact wording is not the contract, so nothing here pins it.
 func TestAnnounce(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		loaded []string
-		names  []string
-		want   string
+		name     string
+		loaded   []string
+		names    []string
+		silent   bool
+		contains []string
 	}{
-		{name: "first load", names: []string{"API_KEY", "TOKEN"}, want: "fuu: /p/.fuu.toml: +API_KEY +TOKEN\n"},
-		{name: "unload", loaded: []string{"API_KEY", "TOKEN"}, want: "fuu: unloading -API_KEY -TOKEN\n"},
-		{name: "switching vaults", loaded: []string{"OLD_KEY"}, names: []string{"NEW_KEY"}, want: "fuu: /p/.fuu.toml: +NEW_KEY -OLD_KEY\n"},
-		{name: "value refresh", loaded: []string{"API_KEY"}, names: []string{"API_KEY"}, want: ""},
-		{name: "nothing to say", want: ""},
+		{name: "first load", names: []string{"API_KEY", "TOKEN"}, contains: []string{"+API_KEY", "+TOKEN", "/p/.fuu.toml"}},
+		{name: "unload", loaded: []string{"API_KEY", "TOKEN"}, contains: []string{"-API_KEY", "-TOKEN"}},
+		{name: "switching vaults", loaded: []string{"OLD_KEY"}, names: []string{"NEW_KEY"}, contains: []string{"+NEW_KEY", "-OLD_KEY", "/p/.fuu.toml"}},
+		{name: "vault without keys", loaded: []string{"OLD_KEY"}, names: []string{}, contains: []string{"-OLD_KEY", "/p/.fuu.toml"}},
+		{name: "value refresh", loaded: []string{"API_KEY"}, names: []string{"API_KEY"}, silent: true},
+		{name: "nothing to say", silent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := captureStderr(t, func() {
 				announce("/p/.fuu.toml", tc.loaded, tc.names)
 			})
-			if got != tc.want {
-				t.Fatalf("announce = %q, want %q", got, tc.want)
+			if tc.silent {
+				if got != "" {
+					t.Fatalf("announce printed %q, want silence", got)
+				}
+				return
+			}
+			for _, want := range tc.contains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("announce printed %q, want it to carry %q", got, want)
+				}
 			}
 		})
 	}

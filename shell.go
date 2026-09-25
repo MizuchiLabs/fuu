@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -182,7 +183,8 @@ func vaultState(path string) (string, error) {
 
 // announce reports which names the hook just moved in or out of the shell,
 // direnv style. Values never appear here, and a move that changes no names
-// says nothing. An empty name set means the shell was unloaded.
+// says nothing. A nil name set means the shell was unloaded, an empty one is
+// a vault that holds no keys and still announces itself as loading.
 func announce(path string, loaded, names []string) {
 	parts := make([]string, 0, len(loaded)+len(names))
 	for _, n := range names {
@@ -198,11 +200,29 @@ func announce(path string, loaded, names []string) {
 	if len(parts) == 0 {
 		return
 	}
-	if len(names) == 0 {
+	if names == nil {
 		fmt.Fprintf(os.Stderr, "fuu: unloading %s\n", strings.Join(parts, " "))
 		return
 	}
-	fmt.Fprintf(os.Stderr, "fuu: %s: %s\n", path, strings.Join(parts, " "))
+	fmt.Fprintf(os.Stderr, "fuu: loading %s\n", displayPath(path))
+	fmt.Fprintf(os.Stderr, "fuu: export %s\n", strings.Join(parts, " "))
+}
+
+// displayPath is the absolute path with the home directory folded to a leading ~.
+func displayPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return abs
+	}
+	rel, ok := strings.CutPrefix(abs, home+string(filepath.Separator))
+	if !ok {
+		return abs
+	}
+	return "~" + string(filepath.Separator) + rel
 }
 
 func cmdRun(ctx context.Context, cmd *cli.Command) error {
