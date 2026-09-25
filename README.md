@@ -114,7 +114,20 @@ DATABASE_URL = "postgres://localhost/mydb"
 
 Change a value, add a line to add a key, delete a line to drop a key. Keys you
 leave alone are not re-encrypted, and every key keeps its entry in the file,
-so a git diff shows exactly which line changed. The vault is re-read after the
+so a git diff shows exactly which line changed.
+
+Commenting a line out disables the key instead: it stays sealed in the vault
+and never loads into a shell, and a later `fuu edit` shows it as a commented
+line you can uncomment to bring back. Deleting the commented line is what
+drops it for real. Only a whole line starting with `#` counts, and only for a
+name the vault already holds, so ordinary notes in the buffer land nowhere.
+
+Commented out keys answer `fuu ls` with a `#` in front of their name, `fuu get`
+refuses them with a pointer back to `fuu edit`, and `fuu set` on one writes
+the value and brings the key back. A shell with the hook drops a key the
+moment it is commented out, at the next prompt, and says so like any unload.
+
+The vault is re-read after the
 editor closes and only your changes are applied to it, so a `fuu set` from
 another window while you were editing survives. Any shell with the hook picks
 up what you saved at its next prompt, no cd needed.
@@ -199,7 +212,15 @@ name = "..." # the device name, sealed under the vault key
 
 [secret]
 Wq4RKx3a9fQm2Zt7 = "..." # one line per value, under an HMAC token of its name
+
+[disabled]
+tR9aLm2XwQp4Kd8f = "..." # one line per commented out key, under its own seal
 ```
+
+A commented out key keeps its entry under the same kind of token in a
+`[disabled]` table, sealed for that table so a body cannot be moved between
+the two. The table appears when a key is commented out and disappears when
+none is left.
 
 Without the vault key the file gives up only the format version, the
 envelopes, the salt, how many entries exist and roughly how long each one was.
@@ -217,7 +238,7 @@ SECURITY.md, the truth for anything crypto related.
 ## Commands
 
 | command                       | what it does                                                    |
-| ----------------------------- | --------------------------------------------------------------- |
+| ----------------------------- | ---------------------------------------------------------------- |
 | `fuu init [--name]`           | create a vault in this repository and enroll this machine       |
 | `fuu trust [--name]`          | trust this vault in this folder and enroll this machine         |
 | `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted             |

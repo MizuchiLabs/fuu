@@ -116,6 +116,21 @@ func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, error)
 	return key, nil
 }
 
+// openPinned is unlock for callers that already hold the path and the device
+// key, so a command body can run against a soft key in tests the way trust
+// does.
+func openPinned(path string, dk vault.DeviceKey) (*vault.File, []byte, error) {
+	f, pin, err := loadTrusted(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	key, err := unsealPinned(f, dk, pin)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, key, nil
+}
+
 // unlock opens the vault, unseals the vault key with this machine's device key
 // and reports this machine's public key. The device key is closed on the way
 // out, unsealing is all it is needed for.

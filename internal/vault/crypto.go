@@ -27,6 +27,8 @@ const (
 	// entryAAD and deviceAAD bind encrypted bodies to their slot, so a body cut from one entry cannot be pasted into another.
 	entryAAD  = "fuu/v1/secret\x00"
 	deviceAAD = "fuu/v1/device\x00"
+	// disabledAAD binds a commented out entry to the disabled table, so moving a body between the tables is a refusal.
+	disabledAAD = "fuu/v1/disabled\x00"
 
 	// nameInfo and fingerprintInfo bind tokens and the vault fingerprint to this format version.
 	nameInfo        = "fuu/v1/token\x00"

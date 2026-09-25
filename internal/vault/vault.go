@@ -26,15 +26,17 @@ import (
 	"github.com/mizuchilabs/kata/fsutil"
 )
 
-// Version is the vault file format this build writes and reads.
-const Version = 1
-
-const vaultKeySize = 32
+const (
+	// Version is the vault file format this build writes and reads.
+	Version      = 1
+	vaultKeySize = 32
+)
 
 var (
 	ErrNotEnrolled = errors.New("this machine is not enrolled in this vault")
 	ErrConflict    = errors.New("the vault changed on disk while fuu was working, run the command again")
 	ErrNoKey       = errors.New("no such key")
+	ErrDisabled    = errors.New("this key is commented out in fuu edit, uncomment it there to use it")
 	ErrNoDevice    = errors.New("no such device")
 	ErrDupName     = errors.New("device name already taken")
 	ErrDupDevice   = errors.New("this device is already enrolled")
@@ -66,6 +68,7 @@ type File struct {
 	Recovery Recovery          `toml:"recovery"`
 	Device   map[string]Device `toml:"device"`
 	Secret   map[string]string `toml:"secret"`
+	Disabled map[string]string `toml:"disabled,omitempty"`
 
 	raw []byte
 }
@@ -95,6 +98,9 @@ func Parse(data []byte) (*File, error) {
 	if f.Secret == nil {
 		f.Secret = map[string]string{}
 	}
+	if f.Disabled == nil {
+		f.Disabled = map[string]string{}
+	}
 	f.raw = data
 	return f, nil
 }
@@ -107,9 +113,10 @@ func New(dk DeviceKey, name, passphrase string) (*File, []byte, error) {
 		return nil, nil, fmt.Errorf("vault: generate vault key: %w", err)
 	}
 	f := &File{
-		Version: Version,
-		Device:  map[string]Device{},
-		Secret:  map[string]string{},
+		Version:  Version,
+		Device:   map[string]Device{},
+		Secret:   map[string]string{},
+		Disabled: map[string]string{},
 	}
 	if err := f.AddDevice(key, dk.Public(), name); err != nil {
 		return nil, nil, err
@@ -160,25 +167,47 @@ func (f *File) UnsealPassphrase(pass string) ([]byte, error) {
 	return unwrapPassphrase(pass, f.Recovery.Salt, f.Recovery.Wrap)
 }
 
-// Secrets opens and validates every entry as name to value. It authenticates
-// the whole vault: any entry that is not sealed under this key is a refusal.
+// Secrets opens and validates the enabled entries as name to value. It
+// authenticates every entry it returns: any entry that is not sealed under
+// this key is a refusal.
 func (f *File) Secrets(key []byte) (map[string]string, error) {
-	out := make(map[string]string, len(f.Secret))
-	for tok, body := range f.Secret {
-		plain, err := openValue(key, body, entryAAD+tok)
+	return f.entries(key, f.Secret, entryAAD)
+}
+
+// DisabledSecrets opens the commented out entries the same way, so a vault
+// that holds any authenticates as a whole.
+func (f *File) DisabledSecrets(key []byte) (map[string]string, error) {
+	return f.entries(key, f.Disabled, disabledAAD)
+}
+
+// entries opens one whole table under the aad its bodies were sealed with.
+func (f *File) entries(key []byte, table map[string]string, aad string) (map[string]string, error) {
+	out := make(map[string]string, len(table))
+	for tok, body := range table {
+		name, value, err := openEntry(key, tok, body, aad)
 		if err != nil {
-			return nil, fmt.Errorf("vault: secret %s: %w", tok, err)
+			return nil, err
 		}
-		name, value, ok := bytes.Cut(plain, []byte{0})
-		if !ok || !ValidName(string(name)) || tok != token(key, string(name)) {
-			return nil, fmt.Errorf(
-				"vault: secret %s is not sealed under this vault key, the file was tampered with",
-				tok,
-			)
-		}
-		out[string(name)] = string(value)
+		out[name] = value
 	}
 	return out, nil
+}
+
+// openEntry opens one sealed body and checks it is the entry its token
+// addresses, the check that makes a pasted or tampered body a refusal.
+func openEntry(key []byte, tok, body, aad string) (string, string, error) {
+	plain, err := openValue(key, body, aad+tok)
+	if err != nil {
+		return "", "", fmt.Errorf("vault: secret %s: %w", tok, err)
+	}
+	name, value, ok := bytes.Cut(plain, []byte{0})
+	if !ok || !ValidName(string(name)) || tok != token(key, string(name)) {
+		return "", "", fmt.Errorf(
+			"vault: secret %s is not sealed under this vault key, the file was tampered with",
+			tok,
+		)
+	}
+	return string(name), string(value), nil
 }
 
 // Devices opens every device name and parses every public key, as pub to name.
@@ -220,13 +249,47 @@ func (f *File) Set(key []byte, name, value string) error {
 	return nil
 }
 
-// Unset drops one entry.
+// Disable comments one key out: the entry moves to the [disabled] table under
+// a seal of its own, so it stops loading into shells without being lost.
+func (f *File) Disable(key []byte, name string) error {
+	tok := token(key, name)
+	body, ok := f.Secret[tok]
+	if !ok {
+		return fmt.Errorf("%w %q", ErrNoKey, name)
+	}
+	_, value, err := openEntry(key, tok, body, entryAAD)
+	if err != nil {
+		return err
+	}
+	sealed, err := sealValue(key, []byte(name+"\x00"+value), disabledAAD+tok)
+	if err != nil {
+		return err
+	}
+	f.Disabled[tok] = sealed
+	delete(f.Secret, tok)
+	return nil
+}
+
+// Enable stores one value under name and drops any disabled entry of the same
+// name, so an uncommented or overwritten key is back in the shell.
+func (f *File) Enable(key []byte, name, value string) error {
+	if err := f.Set(key, name, value); err != nil {
+		return err
+	}
+	delete(f.Disabled, token(key, name))
+	return nil
+}
+
+// Unset drops one entry, commented out or not.
 func (f *File) Unset(key []byte, name string) error {
 	tok := token(key, name)
-	if _, ok := f.Secret[tok]; !ok {
+	_, active := f.Secret[tok]
+	_, off := f.Disabled[tok]
+	if !active && !off {
 		return fmt.Errorf("%w %q", ErrNoKey, name)
 	}
 	delete(f.Secret, tok)
+	delete(f.Disabled, tok)
 	return nil
 }
 
@@ -292,6 +355,10 @@ func (f *File) Rotate(old []byte, passphrase string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	disabled, err := f.DisabledSecrets(old)
+	if err != nil {
+		return nil, err
+	}
 
 	key := make([]byte, vaultKeySize)
 	if _, err := rand.Read(key); err != nil {
@@ -318,6 +385,15 @@ func (f *File) Rotate(old []byte, passphrase string) ([]byte, error) {
 	f.Secret = map[string]string{}
 	for _, name := range slices.Sorted(maps.Keys(secrets)) {
 		if err := f.Set(key, name, secrets[name]); err != nil {
+			return nil, err
+		}
+	}
+	f.Disabled = map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(disabled)) {
+		if err := f.Set(key, name, disabled[name]); err != nil {
+			return nil, err
+		}
+		if err := f.Disable(key, name); err != nil {
 			return nil, err
 		}
 	}

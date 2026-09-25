@@ -10,12 +10,6 @@ import (
 	"golang.org/x/term"
 )
 
-// prompt reads one secret line. It loses the echo on a terminal and takes a
-// plain line when stdin is a pipe, so commands stay scriptable.
-func prompt(label string) (string, error) {
-	return readSecret(label)
-}
-
 // confirm takes one visible line, since the answer is not a secret. Anything
 // but a plain yes means no.
 func confirm(label string) (bool, error) {

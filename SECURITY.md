@@ -55,11 +55,12 @@ rewraps everything.
 
 **Protects.** Anyone who reads the file without an enrolled chip or your
 passphrase gets the format version, the envelopes, the salt, how many entries
-there are and roughly how long each one was. Key names and device names are
-not among those things. Nothing an outsider writes is believed: values only
-open under their own token, device entries only open if they were sealed
-under the vault key, and accepting a vault key this machine has not seen
-always takes the recovery passphrase. There is no trust on first use.
+there are, which of them are commented out, and roughly how long each one
+was. Key names and device names are not among those things. Nothing an
+outsider writes is believed: values only open under their own token, device
+entries only open if they were sealed under the vault key, and accepting a
+vault key this machine has not seen always takes the recovery passphrase.
+There is no trust on first use.
 
 **Does not protect.** Someone with write access to the repository can delete
 an entry, or revert an entry, or the whole file, to an older value from git
@@ -76,13 +77,13 @@ it only guards what comes next.
 ## Someone reads the vault file
 
 They learn the format version, the envelopes, the salt, how many entries the
-vault holds and roughly how long each one was. The key names are HMAC tokens
-that reveal nothing without the vault key, the names and the device names
-live inside ciphertext, the values are sealed, and the vault key exists in
-the clear nowhere in the file. sops, the usual tool for a file like this,
-leaves key names readable. fuu does not. The token a name maps to is stable,
-so a public git diff still shows which entry changed without saying what it
-is.
+vault holds, which of them are commented out, and roughly how long each one
+was. The key names are HMAC tokens that reveal nothing without the vault
+key, the names and the device names live inside ciphertext, the values are
+sealed, and the vault key exists in the clear nowhere in the file. sops, the
+usual tool for a file like this, leaves key names readable. fuu does not. The
+token a name maps to is stable, so a public git diff still shows which entry
+changed without saying what it is.
 
 ## Someone can write the vault file
 

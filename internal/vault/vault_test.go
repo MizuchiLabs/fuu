@@ -273,6 +273,155 @@ func TestValidDeviceName(t *testing.T) {
 	}
 }
 
+// TestDisableKeepsEntry is the comment out contract: the value leaves the
+// shell's map, survives under DisabledSecrets, and comes back on Enable with
+// the file version tracking the table's presence.
+func TestDisableKeepsEntry(t *testing.T) {
+	f, _, key := newFixture(t)
+
+	if err := f.Disable(key, "API_KEY"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	values, err := f.Secrets(key)
+	if err != nil {
+		t.Fatalf("Secrets: %v", err)
+	}
+	if _, ok := values["API_KEY"]; ok {
+		t.Fatal("a disabled key is still in Secrets")
+	}
+	if values["DATABASE_URL"] != "postgres://x" {
+		t.Fatalf("Disable moved a key it was not asked to: %v", values)
+	}
+	off, err := f.DisabledSecrets(key)
+	if err != nil {
+		t.Fatalf("DisabledSecrets: %v", err)
+	}
+	if off["API_KEY"] != "s3cret" {
+		t.Fatalf("disabled entries = %v, want API_KEY with its value", off)
+	}
+	if err := f.Disable(key, "MISSING"); !errors.Is(err, ErrNoKey) {
+		t.Fatalf("Disable of a missing key = %v, want ErrNoKey", err)
+	}
+
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
+	if err := f.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if f.Version != Version {
+		t.Fatalf("version = %d, want %d", f.Version, Version)
+	}
+	if !strings.Contains(string(mustRead(t, path)), "[disabled]") {
+		t.Fatal("the file carries no [disabled] table")
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of a vault with disabled entries: %v", err)
+	}
+	if reloaded.Disabled == nil {
+		t.Fatal("Parse handed out a vault with a nil disabled map")
+	}
+	off, err = reloaded.DisabledSecrets(key)
+	if err != nil {
+		t.Fatalf("DisabledSecrets after reload: %v", err)
+	}
+	if off["API_KEY"] != "s3cret" {
+		t.Fatalf("disabled entries after reload = %v", off)
+	}
+
+	if err := reloaded.Enable(key, "API_KEY", "s3cret"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if err := reloaded.Save(path); err != nil {
+		t.Fatalf("Save after Enable: %v", err)
+	}
+	if strings.Contains(string(mustRead(t, path)), "[disabled]") {
+		t.Fatal("an emptied disabled table is still written")
+	}
+	values, err = reloaded.Secrets(key)
+	if err != nil {
+		t.Fatalf("Secrets after Enable: %v", err)
+	}
+	if values["API_KEY"] != "s3cret" {
+		t.Fatalf("values after Enable = %v", values)
+	}
+	if off, err = reloaded.DisabledSecrets(key); err != nil || len(off) != 0 {
+		t.Fatalf("disabled entries after Enable = %v, %v", off, err)
+	}
+}
+
+// TestUnsetDropsDisabled covers deleting a commented out key: it leaves both
+// tables, not just the visible one.
+func TestUnsetDropsDisabled(t *testing.T) {
+	f, _, key := newFixture(t)
+	if err := f.Disable(key, "API_KEY"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if err := f.Unset(key, "API_KEY"); err != nil {
+		t.Fatalf("Unset of a disabled key: %v", err)
+	}
+	if values, err := f.Secrets(key); err != nil || len(values) != 1 {
+		t.Fatalf("values after Unset = %v, %v", values, err)
+	}
+	if off, err := f.DisabledSecrets(key); err != nil || len(off) != 0 {
+		t.Fatalf("disabled entries after Unset = %v, %v", off, err)
+	}
+}
+
+// TestDisabledBodyRefusesTableMove covers pasting a disabled body back into
+// the [secret] table: the body is sealed to the slot it belongs to, so
+// uncommenting through the file rather than fuu edit is a refusal.
+func TestDisabledBodyRefusesTableMove(t *testing.T) {
+	f, _, key := newFixture(t)
+	if err := f.Disable(key, "API_KEY"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	for tok, body := range f.Disabled {
+		f.Secret[tok] = body
+		delete(f.Disabled, tok)
+	}
+	if _, err := f.Secrets(key); err == nil {
+		t.Fatal("Secrets accepted a body moved out of the disabled table")
+	}
+}
+
+// TestRotateKeepsDisabled verifies a rotation rewraps commented out entries
+// too, under the disabled slot of the new key.
+func TestRotateKeepsDisabled(t *testing.T) {
+	f, dk, key := newFixture(t)
+	if err := f.Disable(key, "API_KEY"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+
+	fresh, err := f.Rotate(key, "new passphrase")
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	off, err := f.DisabledSecrets(fresh)
+	if err != nil {
+		t.Fatalf("DisabledSecrets after rotate: %v", err)
+	}
+	if off["API_KEY"] != "s3cret" {
+		t.Fatalf("disabled entries after rotate = %v, want API_KEY with its value", off)
+	}
+	if values, err := f.Secrets(fresh); err != nil || values["DATABASE_URL"] != "postgres://x" {
+		t.Fatalf("values after rotate = %v, %v", values, err)
+	}
+	if _, err = f.DisabledSecrets(key); err == nil {
+		t.Fatal("the old vault key still opens the disabled entries")
+	}
+	if _, err = f.Unseal(dk); err != nil {
+		t.Fatalf("Unseal after rotate: %v", err)
+	}
+}
+
+// TestParseRefusesUnknownVersion keeps a future format loud: this build says
+// what it reads and nothing else sneaks past.
+func TestParseRefusesUnknownVersion(t *testing.T) {
+	if _, err := Parse([]byte("version = 3\n")); !errors.Is(err, errBadVersion) {
+		t.Fatalf("Parse of version 3 = %v, want errBadVersion", err)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

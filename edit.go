@@ -15,6 +15,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
 
+	"github.com/mizuchilabs/fuu/internal/devkey"
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
@@ -22,7 +23,20 @@ import (
 // changed. The buffer is TOML so values with quotes or newlines survive a
 // round trip exactly.
 func cmdEdit(ctx context.Context, cmd *cli.Command) error {
-	_, f, key, _, err := unlock(cmd)
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+	dk, err := devkey.Open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dk.Close() }()
+	return edit(ctx, path, dk)
+}
+
+func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
+	f, key, err := openPinned(path, dk)
 	if err != nil {
 		return err
 	}
@@ -30,8 +44,12 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	beforeOff, err := f.DisabledSecrets(key)
+	if err != nil {
+		return err
+	}
 
-	raw, err := runEditor(ctx, before)
+	raw, err := runEditor(ctx, before, beforeOff)
 	if err != nil {
 		return err
 	}
@@ -39,9 +57,14 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	known := maps.Clone(before)
+	maps.Copy(known, beforeOff)
+	off := parseCommented(raw, known)
+
 	// An empty buffer is far more likely a botched edit than a real intention,
 	// so dropping every key takes one extra word instead of being refused.
-	if len(edited) == 0 && len(before) > 0 {
+	// Commenting every key out is not that: nothing is lost, so it goes ahead.
+	if len(edited) == 0 && len(known) > 0 && len(off) == 0 {
 		ok, err := confirm("drop every key in this vault")
 		if err != nil {
 			return err
@@ -51,23 +74,34 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	var changed, added, dropped []string
+	var changed, added, dropped, disabled, enabled []string
 	for _, name := range slices.Sorted(maps.Keys(edited)) {
-		old, ok := before[name]
+		old, on := before[name]
 		switch {
-		case ok && old == edited[name]:
-		case ok:
+		case on && old == edited[name]:
+		case on:
 			changed = append(changed, name)
 		default:
-			added = append(added, name)
+			if _, off := beforeOff[name]; off {
+				enabled = append(enabled, name)
+			} else {
+				added = append(added, name)
+			}
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(before)) {
-		if _, ok := edited[name]; !ok {
-			dropped = append(dropped, name)
+	for _, name := range slices.Sorted(maps.Keys(known)) {
+		if _, ok := edited[name]; ok {
+			continue
 		}
+		if _, ok := off[name]; ok {
+			if _, wasOff := beforeOff[name]; !wasOff {
+				disabled = append(disabled, name)
+			}
+			continue
+		}
+		dropped = append(dropped, name)
 	}
-	if len(changed) == 0 && len(added) == 0 && len(dropped) == 0 {
+	if len(changed)+len(added)+len(dropped)+len(disabled)+len(enabled) == 0 {
 		fmt.Println("no changes")
 		return nil
 	}
@@ -75,7 +109,7 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	// The editor ran outside any lock, so re-open the vault and apply only the
 	// diff to whatever is on disk now. A write from another shell during the
 	// edit survives, only the names this edit actually touched are moved.
-	path, f, key, _, err := unlock(cmd)
+	f, key, err = openPinned(path, dk)
 	if err != nil {
 		return err
 	}
@@ -86,6 +120,16 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	}
 	for _, name := range added {
 		if err := f.Set(key, name, edited[name]); err != nil {
+			return err
+		}
+	}
+	for _, name := range enabled {
+		if err := f.Enable(key, name, edited[name]); err != nil {
+			return err
+		}
+	}
+	for _, name := range disabled {
+		if err := f.Disable(key, name); err != nil && !errors.Is(err, vault.ErrNoKey) {
 			return err
 		}
 	}
@@ -105,10 +149,12 @@ func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// runEditor shows the values as TOML in the user's editor and returns the result.
+// runEditor shows the values as TOML in the user's editor and returns the
+// result. Commented out keys come along as commented lines, so uncommenting
+// one is all it takes to bring it back.
 //
 //nolint:gosec // G204: the editor is whatever the user configured. G703: the buffer paths come from a fresh temp dir under the operator's own XDG_RUNTIME_DIR, not from anything a repo supplies.
-func runEditor(ctx context.Context, values map[string]string) ([]byte, error) {
+func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte, error) {
 	argv := strings.Fields(editor())
 	if len(argv) == 0 {
 		return nil, errors.New("edit: set $EDITOR or $VISUAL")
@@ -126,9 +172,20 @@ func runEditor(ctx context.Context, values map[string]string) ([]byte, error) {
 	defer func() { _ = os.RemoveAll(tmp) }()
 
 	var buf bytes.Buffer
-	fmt.Fprint(&buf, "# save and close to write the changes back, delete a line to drop a key\n\n")
+	fmt.Fprint(&buf, "# save and close to write the changes back, delete a line to drop a key\n")
+	fmt.Fprint(&buf, "# comment a line out to keep it in the vault but out of the shell\n\n")
 	if err := toml.NewEncoder(&buf).Encode(values); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
+	}
+	if len(disabled) > 0 {
+		fmt.Fprint(&buf, "\n# commented out, kept in the vault and never loaded into a shell\n")
+		var dbuf bytes.Buffer
+		if err := toml.NewEncoder(&dbuf).Encode(disabled); err != nil {
+			return nil, fmt.Errorf("edit: %w", err)
+		}
+		for line := range strings.SplitSeq(strings.TrimSuffix(dbuf.String(), "\n"), "\n") {
+			fmt.Fprintf(&buf, "# %s\n", line)
+		}
 	}
 
 	path := filepath.Join(tmp, "secrets.toml")
@@ -166,4 +223,26 @@ func parseValues(raw []byte) (map[string]string, error) {
 		}
 	}
 	return values, nil
+}
+
+// parseCommented reads back which known names the operator commented out.
+// Only a name the vault already holds counts, every other comment is prose
+// and lands nowhere.
+func parseCommented(raw []byte, known map[string]string) map[string]struct{} {
+	off := make(map[string]struct{})
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "#")
+		if !ok {
+			continue
+		}
+		name, _, ok := strings.Cut(rest, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if _, ok := known[name]; ok {
+			off[name] = struct{}{}
+		}
+	}
+	return off
 }

@@ -87,7 +87,7 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 		}
 	}
 
-	pass, err := prompt("recovery passphrase")
+	pass, err := readSecret("recovery passphrase")
 	if err != nil {
 		return err
 	}
@@ -103,6 +103,9 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 
 	// The whole file authenticates before anything is recorded or enrolled.
 	if _, err := f.Secrets(pkey); err != nil {
+		return err
+	}
+	if _, err := f.DisabledSecrets(pkey); err != nil {
 		return err
 	}
 	if _, err := f.Devices(pkey); err != nil {

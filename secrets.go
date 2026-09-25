@@ -39,7 +39,7 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 		}
 		value = strings.TrimSuffix(strings.TrimSuffix(string(all), "\n"), "\r")
 	default:
-		if value, err = prompt("value"); err != nil {
+		if value, err = readSecret("value"); err != nil {
 			return err
 		}
 	}
@@ -48,7 +48,9 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if err := f.Set(key, name, value); err != nil {
+	// Enable rather than Set: writing a value for a commented out key brings
+	// it back, a fresh name is unaffected.
+	if err := f.Enable(key, name, value); err != nil {
 		return err
 	}
 	return f.Save(path)
@@ -84,10 +86,17 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	value, ok := values[name]
-	if !ok {
+	if _, ok := values[name]; !ok {
+		off, err := f.DisabledSecrets(key)
+		if err != nil {
+			return err
+		}
+		if _, ok := off[name]; ok {
+			return fmt.Errorf("%w: %s", vault.ErrDisabled, name)
+		}
 		return fmt.Errorf("%w %q", vault.ErrNoKey, name)
 	}
+	value := values[name]
 	// Pipes and redirects get the exact bytes. A terminal gets a newline too
 	// so the prompt keeps its own line.
 	if term.IsTerminal(int(os.Stdout.Fd())) && !strings.HasSuffix(value, "\n") {
@@ -106,8 +115,22 @@ func cmdLs(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	names := slices.Sorted(maps.Keys(values))
-	for _, name := range names {
+	off, err := f.DisabledSecrets(key)
+	if err != nil {
+		return err
+	}
+	names := make(map[string]bool, len(values)+len(off))
+	for name := range values {
+		names[name] = false
+	}
+	for name := range off {
+		names[name] = true
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		if names[name] {
+			fmt.Println("#", name)
+			continue
+		}
 		fmt.Println(name)
 	}
 	return nil
