@@ -53,6 +53,18 @@ sboms:
     args: ["$artifact", "--output", "cyclonedx-json=$document"]
     artifacts: binary
 
+nfpms:
+  - vendor: "MizuchiLabs"
+    homepage: "https://github.com/mizuchilabs/fuu"
+    description: "TPM-sealed secrets for your shell"
+    maintainer: "MizuchiLabs <support@mizuchi.dev>"
+    license: Apache-2.0
+    bindir: /usr/bin
+    formats:
+      - apk
+      - deb
+      - rpm
+
 source:
   enabled: true
 
