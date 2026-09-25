@@ -49,8 +49,13 @@ already? `fuu init --prompt` asks for it instead of generating it.
 Commit `.fuu.toml`. The file holds no readable secrets, so a public repository
 is fine.
 
-Walk into the repository and the two variables appear. Walk out and they are
-gone again.
+Walk into the repository and the hook names what it just put in your shell:
+
+    fuu: /home/you/project/.fuu.toml: +DATABASE_URL +API_KEY
+
+Walk out and they are gone again, and the hook says that too:
+
+    fuu: unloading -DATABASE_URL -API_KEY
 
 A vault only loads from a folder this machine has accepted. `fuu init` and
 `fuu join` accept the folder they run in, so that is the last you hear of it.
@@ -98,8 +103,8 @@ is unloaded.
 
 ## Editing the vault
 
-`fuu edit` drops the vault into `$EDITOR` as plain TOML and writes back only
-what changed when you save and close.
+`fuu edit` drops the vault into `$VISUAL` or `$EDITOR` as plain TOML and
+writes back only what changed when you save and close.
 
 ```toml
 API_KEY = "s3cret"

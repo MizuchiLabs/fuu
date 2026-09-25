@@ -268,6 +268,33 @@ func TestEnvReportsRefusalOnce(t *testing.T) {
 	}
 }
 
+// TestAnnounce pins the notice the hook prints at the terminal when it moves
+// names in or out of the shell: names only, never values, and silence for a
+// state the shell already holds.
+func TestAnnounce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		loaded []string
+		names  []string
+		want   string
+	}{
+		{name: "first load", names: []string{"API_KEY", "TOKEN"}, want: "fuu: /p/.fuu.toml: +API_KEY +TOKEN\n"},
+		{name: "unload", loaded: []string{"API_KEY", "TOKEN"}, want: "fuu: unloading -API_KEY -TOKEN\n"},
+		{name: "switching vaults", loaded: []string{"OLD_KEY"}, names: []string{"NEW_KEY"}, want: "fuu: /p/.fuu.toml: +NEW_KEY -OLD_KEY\n"},
+		{name: "value refresh", loaded: []string{"API_KEY"}, names: []string{"API_KEY"}, want: ""},
+		{name: "nothing to say", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := captureStderr(t, func() {
+				announce("/p/.fuu.toml", tc.loaded, tc.names)
+			})
+			if got != tc.want {
+				t.Fatalf("announce = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestStaleWriteCounterRefused covers rollback protection: the exact bytes
 // this machine accepted always load, a signed mutation loads and moves the
 // record forward, and an older signed copy of the same vault is refused.

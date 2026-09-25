@@ -163,6 +163,10 @@ fish hook for fish quoting, so no inherited variable can switch the dialect
 under them. Values with a NUL byte are refused at `fuu set` and `fuu edit`,
 the shell would silently drop the byte.
 
+The hook announces what it just moved in or out of your shell at the
+terminal, names only. Values never appear there, and a state the shell
+already holds says nothing.
+
 ## The edit buffer
 
 `fuu edit` shows plaintext in a private temp dir, removed after the editor

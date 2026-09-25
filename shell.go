@@ -100,6 +100,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if errors.Is(err, errNoVault) {
 		out.unload(loaded)
+		announce(path, loaded, nil)
 		return nil
 	}
 	if err != nil {
@@ -120,6 +121,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		out.unload(loaded)
+		announce(path, loaded, nil)
 		return nil
 	case errors.Is(err, errUnaccepted), errors.Is(err, errUntrusted),
 		errors.Is(err, errStale), errors.Is(err, errRevoked):
@@ -135,6 +137,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "fuu: %v\n", err)
 		}
 		out.unload(loaded)
+		announce(path, loaded, nil)
 		out.export("FUU_STAMP", mark)
 		return nil
 	case err != nil:
@@ -160,6 +163,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	names := emitValues(out, values)
 	out.export("FUU_LOADED", strings.Join(names, " "))
 	out.export("FUU_STAMP", stamp)
+	announce(path, loaded, names)
 	return nil
 }
 
@@ -181,6 +185,31 @@ func vaultStamp(path string) (string, error) {
 func refusalMark(err error, stamp string) string {
 	sum := sha256.Sum256([]byte(err.Error() + "\x00" + stamp))
 	return fmt.Sprintf("refused:%x", sum)
+}
+
+// announce reports which names the hook just moved in or out of the shell,
+// direnv style. Values never appear here, and a move that changes no names
+// says nothing. An empty name set means the shell was unloaded.
+func announce(path string, loaded, names []string) {
+	parts := make([]string, 0, len(loaded)+len(names))
+	for _, n := range names {
+		if !slices.Contains(loaded, n) {
+			parts = append(parts, "+"+n)
+		}
+	}
+	for _, n := range loaded {
+		if !slices.Contains(names, n) {
+			parts = append(parts, "-"+n)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	if len(names) == 0 {
+		fmt.Fprintf(os.Stderr, "fuu: unloading %s\n", strings.Join(parts, " "))
+		return
+	}
+	fmt.Fprintf(os.Stderr, "fuu: %s: %s\n", path, strings.Join(parts, " "))
 }
 
 func cmdPrint(_ context.Context, cmd *cli.Command) error {
