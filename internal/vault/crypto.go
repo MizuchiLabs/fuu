@@ -96,7 +96,7 @@ func wrapKey(recipient *ecdh.PublicKey, vaultKey []byte) (ePub, body string, err
 	if err != nil {
 		return "", "", err
 	}
-	return compressEPub(eph.PublicKey()), body, nil
+	return compressPoint(eph.PublicKey()), body, nil
 }
 
 // unwrapKey opens a device wrap with the key it was sealed to.
@@ -104,7 +104,7 @@ func unwrapKey(dk DeviceKey, ePub, body string) ([]byte, error) {
 	if dk == nil {
 		return nil, errors.New("nil device key")
 	}
-	peer, err := parseEPub(ePub)
+	peer, err := parsePoint(ePub)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +196,9 @@ func deriveWrappingKey(shared []byte, ephemeral, recipient *ecdh.PublicKey) ([]b
 	return key, nil
 }
 
-// compressEPub encodes pub as the compressed point a wrap stores.
-func compressEPub(pub *ecdh.PublicKey) string {
+// compressPoint encodes pub as the compressed P-256 point both wraps and
+// device ids store.
+func compressPoint(pub *ecdh.PublicKey) string {
 	// elliptic.MarshalCompressed wants coordinates, crypto/ecdh hands out the raw point.
 	b := pub.Bytes()
 	x := new(big.Int).SetBytes(b[1:33])
@@ -205,15 +206,15 @@ func compressEPub(pub *ecdh.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(elliptic.MarshalCompressed(elliptic.P256(), x, y))
 }
 
-// parseEPub rebuilds the public key a wrap stores.
-func parseEPub(s string) (*ecdh.PublicKey, error) {
+// parsePoint rebuilds the public key compressPoint encodes.
+func parsePoint(s string) (*ecdh.PublicKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return nil, fmt.Errorf("vault: decode ephemeral public key: %w", err)
+		return nil, fmt.Errorf("vault: decode public key: %w", err)
 	}
 	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), raw)
 	if x == nil {
-		return nil, errors.New("ephemeral public key is not a compressed P-256 point")
+		return nil, errors.New("public key is not a compressed P-256 point")
 	}
 
 	// crypto/ecdh only takes uncompressed points.
@@ -224,7 +225,7 @@ func parseEPub(s string) (*ecdh.PublicKey, error) {
 
 	peer, err := ecdh.P256().NewPublicKey(uncompressed)
 	if err != nil {
-		return nil, fmt.Errorf("vault: parse ephemeral public key: %w", err)
+		return nil, fmt.Errorf("vault: parse public key: %w", err)
 	}
 	return peer, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/mizuchilabs/kata/buildinfo"
 	"github.com/mizuchilabs/kata/sigx"
@@ -25,9 +26,19 @@ func main() {
 	}
 
 	if err := cmd.Run(sigx.NotifyContext(), os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %s\n", cmd.Name, present(err))
+		fmt.Fprintf(os.Stderr, "%s: %s\n", cmd.Name, sanitize(present(err)))
 		os.Exit(1)
 	}
+}
+
+// Strips control characters so untrusted text cannot rewrite the terminal.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Keeps the deepest message and appended hint lines, drops the context prefixes.

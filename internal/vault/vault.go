@@ -5,13 +5,11 @@ package vault
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/elliptic"
 	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
-	"math/big"
 	"os"
 	"slices"
 	"strings"
@@ -24,6 +22,9 @@ const (
 	// Version is the vault file format this build writes and reads.
 	Version      = 1
 	vaultKeySize = 32
+
+	// maxFileBytes caps the untrusted file before any hashing or parsing.
+	maxFileBytes = 5 << 20 // 5MB
 )
 
 var (
@@ -66,11 +67,28 @@ type File struct {
 	raw []byte
 }
 
-// Load reads the vault file at path.
-func Load(path string) (*File, error) {
-	data, err := os.ReadFile(path)
+// Read reads the vault file at path, refusing anything too large to be one.
+func Read(path string) ([]byte, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("vault: read %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("vault: read %s: %w", path, err)
+	}
+	if len(data) > maxFileBytes {
+		return nil, fmt.Errorf("vault: %s is over %d bytes, refusing it as a vault", path, maxFileBytes)
+	}
+	return data, nil
+}
+
+// Load reads the vault file at path.
+func Load(path string) (*File, error) {
+	data, err := Read(path)
+	if err != nil {
+		return nil, err
 	}
 	return Parse(data)
 }
@@ -197,6 +215,9 @@ func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 			tok,
 		)
 	}
+	if bytes.ContainsRune(value, 0) {
+		return "", "", fmt.Errorf("vault: secret %s: %w", tok, ErrNulValue)
+	}
 	return string(name), string(value), nil
 }
 
@@ -214,6 +235,9 @@ func (f *File) Devices(key []byte) (map[string]string, error) {
 				"vault: device %s is not sealed under this vault key, the file was tampered with",
 				pub,
 			)
+		}
+		if !validDeviceName(string(name)) {
+			return nil, fmt.Errorf("vault: device %s has an invalid name, the file was tampered with", pub)
 		}
 		out[pub] = string(name)
 	}
@@ -404,13 +428,7 @@ func Fingerprint(key []byte) string {
 
 // Pub encodes a P-256 public key as "p256:" plus the compressed point.
 func Pub(pub *ecdh.PublicKey) string {
-	b := pub.Bytes()
-	point := elliptic.MarshalCompressed(
-		elliptic.P256(),
-		new(big.Int).SetBytes(b[1:33]),
-		new(big.Int).SetBytes(b[33:65]),
-	)
-	return "p256:" + base64.RawURLEncoding.EncodeToString(point)
+	return "p256:" + compressPoint(pub)
 }
 
 // parsePub reads what Pub writes.
@@ -419,24 +437,5 @@ func parsePub(s string) (*ecdh.PublicKey, error) {
 	if !ok {
 		return nil, fmt.Errorf("vault: parse public key: %q has no p256: prefix", s)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(rest)
-	if err != nil {
-		return nil, fmt.Errorf("vault: parse public key: %w", err)
-	}
-	x, y := elliptic.UnmarshalCompressed(elliptic.P256(), raw)
-	if x == nil {
-		return nil, errors.New("vault: parse public key: not a compressed P-256 point")
-	}
-
-	// crypto/ecdh only takes uncompressed points.
-	uncompressed := make([]byte, 65)
-	uncompressed[0] = 4
-	x.FillBytes(uncompressed[1:33])
-	y.FillBytes(uncompressed[33:65])
-
-	pub, err := ecdh.P256().NewPublicKey(uncompressed)
-	if err != nil {
-		return nil, fmt.Errorf("vault: parse public key: %w", err)
-	}
-	return pub, nil
+	return parsePoint(rest)
 }

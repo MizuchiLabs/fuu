@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v3"
+
+	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
 // The hooks only ever call back into fuu env, no repo code runs, and a change
@@ -129,7 +131,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		// The hook runs at every prompt, so a refusal is a message and a clean
 		// shell rather than a failed eval.
-		fmt.Fprintf(os.Stderr, "fuu: %s\n", present(err))
+		fmt.Fprintf(os.Stderr, "fuu: %s\n", sanitize(present(err)))
 		out.unload(loaded)
 		announce(path, loaded, nil)
 		out.export("FUU_STATE", state)
@@ -158,9 +160,9 @@ func vaultState(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	data, err := vault.Read(path)
 	if err != nil {
-		return "", fmt.Errorf("env: %w", err)
+		return "", err
 	}
 	buf := make([]byte, 0, len(dir)+len(data)+len(pins[dir])+2)
 	buf = append(buf, dir...)
@@ -192,7 +194,7 @@ func announce(path string, loaded, names []string) {
 		fmt.Fprintf(os.Stderr, "fuu: unloading %s\n", strings.Join(parts, " "))
 		return
 	}
-	fmt.Fprintf(os.Stderr, "fuu: loading %s\n", displayPath(path))
+	fmt.Fprintf(os.Stderr, "fuu: loading %s\n", sanitize(displayPath(path)))
 	fmt.Fprintf(os.Stderr, "fuu: export %s\n", strings.Join(parts, " "))
 }
 

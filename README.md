@@ -95,7 +95,9 @@ read. After a real leak, rotate the credentials at their issuers too.
 ## Editing
 
 `fuu edit` opens the vault in `$VISUAL` or `$EDITOR` as plain TOML and writes
-back only what changed when you save and close.
+back only what changed when you save and close. The variable is a
+whitespace-separated command and its arguments, there is no shell and no
+quoting.
 
 ```toml
 API_KEY = "s3cret"

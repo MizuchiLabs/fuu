@@ -65,7 +65,9 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 		}
 		// A second checkout of an already pinned vault, one word from the operator is enough.
 		if other, ok := pinnedElsewhere(pins, dir, fp); ok {
-			same, err := confirm(fmt.Sprintf("this is the same vault as %s, load it in %s too", other, dir))
+			same, err := confirm(fmt.Sprintf(
+				"this is the same vault as %s, load it in %s too", sanitize(other), sanitize(dir),
+			))
 			if err != nil {
 				return err
 			}
@@ -76,7 +78,7 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 			if err := savePins(pins); err != nil {
 				return err
 			}
-			fmt.Printf("trusted %s\n", dir)
+			fmt.Printf("trusted %s\n", sanitize(dir))
 			return nil
 		}
 	}
@@ -124,7 +126,7 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 	if err := savePins(pins); err != nil {
 		return err
 	}
-	fmt.Printf("trusted %s\n", dir)
+	fmt.Printf("trusted %s\n", sanitize(dir))
 	return nil
 }
 
@@ -163,12 +165,9 @@ func savePins(pins map[string]string) error {
 	if err != nil {
 		return err
 	}
-	out := map[string]string{}
-	for _, dir := range slices.Sorted(maps.Keys(pins)) {
-		out[dir] = pins[dir]
-	}
+	// The encoder sorts map keys, so an unchanged write stays byte identical.
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(out); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(pins); err != nil {
 		return fmt.Errorf("trust: encode: %w", err)
 	}
 	if err := fsutil.WriteIfChanged(path, buf.Bytes(), 0o600); err != nil {

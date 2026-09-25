@@ -28,13 +28,13 @@ func FuzzParse(f *testing.F) {
 }
 
 // A malformed or off curve key must fail as an error, never a panic.
-func FuzzEphemeralPoint(f *testing.F) {
+func FuzzParsePoint(f *testing.F) {
 	f.Add("")
 	f.Add("not-base64!!")
 	f.Fuzz(func(t *testing.T, s string) {
-		key, err := parseEPub(s)
+		key, err := parsePoint(s)
 		if err != nil && key != nil {
-			t.Fatal("parseEPub returned a key alongside an error")
+			t.Fatal("parsePoint returned a key alongside an error")
 		}
 	})
 }

@@ -403,6 +403,46 @@ func TestParseRefusesUnknownVersion(t *testing.T) {
 	}
 }
 
+// A value smuggled in with a NUL byte is refused on read, not just on write.
+func TestSecretsRefusesNULValue(t *testing.T) {
+	f, _, key := newFixture(t)
+	tok := token(key, "API_KEY")
+	body, err := sealValue(key, []byte("API_KEY\x00a\x00b"), entryAAD+tok)
+	if err != nil {
+		t.Fatalf("sealValue: %v", err)
+	}
+	f.Secret[tok] = body
+	if _, err := f.Secrets(key); err == nil {
+		t.Fatal("Secrets accepted a value with a NUL byte")
+	}
+}
+
+// A name sealed behind the vault key still has to be a name.
+func TestDevicesRefusesInvalidName(t *testing.T) {
+	f, dk, key := newFixture(t)
+	pub := Pub(dk.Public())
+	d := f.Device[pub]
+	name, err := sealValue(key, []byte("evil\x1bname"), deviceAAD+pub)
+	if err != nil {
+		t.Fatalf("sealValue: %v", err)
+	}
+	d.Name = name
+	f.Device[pub] = d
+	if _, err := f.Devices(key); err == nil {
+		t.Fatal("Devices accepted a name with control bytes")
+	}
+}
+
+func TestReadRefusesHugeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.toml")
+	if err := os.WriteFile(path, make([]byte, maxFileBytes+1), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Read(path); err == nil {
+		t.Fatal("Read accepted a file over the size cap")
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -130,8 +130,10 @@ read the new file.
 
 Handled. The hook maps your working directory to the nearest `.fuu.toml` up
 to and including the git root. A clone this machine has never trusted loads
-nothing, and `fuu trust` demands the recovery passphrase before it will. Once
-a folder is trusted, walking into it loads the vault into your shell. fuu runs
+nothing, and `fuu trust` demands the recovery passphrase before it will. A
+vault file over 4 MiB is refused before it is hashed or parsed, so a giant one
+cannot stall your prompt. Once a folder is trusted, walking into it loads the
+vault into your shell. fuu runs
 nothing from the repo, but anything you build or run there inherits the
 environment. That is a deliberate trade. If you would not paste a key into a
 terminal in that folder, do not stand in it while the hook is active.
@@ -177,7 +179,8 @@ switch it under them. Values with a NUL byte are refused, the shell would
 silently drop the byte.
 
 The hook announces what it moved in or out of your shell at the terminal,
-names only. Values never appear there.
+names only. Values never appear there. Control bytes are stripped from
+anything fuu prints, so a hostile file cannot rewrite your terminal.
 
 **The edit buffer.** `fuu edit` shows plaintext in a private temp dir, on the
 per-user runtime dir where there is one, removed when the editor closes, swap

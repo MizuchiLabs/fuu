@@ -397,6 +397,16 @@ func captureStderr(t *testing.T, f func()) string {
 	return string(out)
 }
 
+// Untrusted text cannot rewrite the terminal.
+func TestSanitize(t *testing.T) {
+	if got := sanitize("a\x1b]0;x\x07b"); got != "a]0;xb" {
+		t.Fatalf("sanitize kept control bytes: %q", got)
+	}
+	if got := sanitize("plain name-1.0"); got != "plain name-1.0" {
+		t.Fatalf("sanitize mangled plain text: %q", got)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
