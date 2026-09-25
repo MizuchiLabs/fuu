@@ -133,11 +133,11 @@ func repoVaultPath() (string, error) {
 	dir := cwd
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return filepath.Join(dir, "fuu.toml"), nil
+			return filepath.Join(dir, ".fuu.toml"), nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return filepath.Join(cwd, "fuu.toml"), nil
+			return filepath.Join(cwd, ".fuu.toml"), nil
 		}
 		dir = parent
 	}

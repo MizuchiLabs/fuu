@@ -19,6 +19,7 @@ import (
 	"github.com/mizuchilabs/fuu/internal/seal"
 	"github.com/mizuchilabs/fuu/internal/sig"
 	"github.com/mizuchilabs/fuu/internal/vault"
+	"github.com/urfave/cli/v3"
 )
 
 const fixtureDay = "2026-01-02"
@@ -64,7 +65,7 @@ func (s *softSigner) Sign(digest []byte) ([]byte, error) {
 func isolatePins(t *testing.T) string {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	return filepath.Join(t.TempDir(), "fuu.toml")
+	return filepath.Join(t.TempDir(), ".fuu.toml")
 }
 
 // writeVault builds a vault with laptop enrolled, optionally desktop too,
@@ -136,7 +137,7 @@ func captureStderr(t *testing.T, f func()) string {
 // second checkout replaced the folder list and silently untrusted the first.
 func TestTrustKeepsOtherFoldersAccepted(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	pathA := filepath.Join(t.TempDir(), "fuu.toml")
+	pathA := filepath.Join(t.TempDir(), ".fuu.toml")
 	_, key, _, _ := writeVault(t, pathA, false)
 
 	fA, err := vault.Load(pathA)
@@ -151,7 +152,7 @@ func TestTrustKeepsOtherFoldersAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	pathB := filepath.Join(t.TempDir(), "fuu.toml")
+	pathB := filepath.Join(t.TempDir(), ".fuu.toml")
 	if err := os.WriteFile(pathB, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestTrustKeepsOtherFoldersAccepted(t *testing.T) {
 // trust runs there.
 func TestTrustIsScopedToOneFolder(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	pathA := filepath.Join(t.TempDir(), "fuu.toml")
+	pathA := filepath.Join(t.TempDir(), ".fuu.toml")
 	_, key, _, _ := writeVault(t, pathA, false)
 
 	fA, err := vault.Load(pathA)
@@ -190,7 +191,7 @@ func TestTrustIsScopedToOneFolder(t *testing.T) {
 		t.Fatalf("openVerified where the vault was accepted: %v", err)
 	}
 
-	pathB := filepath.Join(t.TempDir(), "fuu.toml")
+	pathB := filepath.Join(t.TempDir(), ".fuu.toml")
 	raw, err := os.ReadFile(pathA)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -211,6 +212,59 @@ func TestTrustIsScopedToOneFolder(t *testing.T) {
 	}
 	if _, err := openVerified(pathB); err != nil {
 		t.Fatalf("openVerified after trust in the new folder: %v", err)
+	}
+}
+
+// TestEnvReportsRefusalOnce pins what an operator sees from the every-prompt
+// hook: a vault this machine has not accepted is reported once, then the shell
+// hears nothing until the situation actually changes.
+func TestEnvReportsRefusalOnce(t *testing.T) {
+	path := isolatePins(t)
+	writeVault(t, path, false)
+	t.Chdir(filepath.Dir(path))
+	t.Setenv("FUU_STAMP", "")
+	t.Setenv("FUU_LOADED", "")
+
+	runEnv := func() (string, string) {
+		t.Helper()
+		root := &cli.Command{
+			Name:     "fuu",
+			Flags:    []cli.Flag{vaultFlag},
+			Commands: commands,
+		}
+		var out string
+		errOut := captureStderr(t, func() {
+			out = captureOutput(t, func() {
+				if err := root.Run(t.Context(), []string{"fuu", "env", "--shell=posix"}); err != nil {
+					t.Fatalf("env: %v", err)
+				}
+			})
+		})
+		return out, errOut
+	}
+
+	want := "fuu: this vault has not been accepted on this machine, if this is really yours run fuu trust here\n"
+	out, errOut := runEnv()
+	if errOut != want {
+		t.Fatalf("first refusal printed %q, want %q", errOut, want)
+	}
+	_, rest, ok := strings.Cut(out, "export FUU_STAMP='")
+	if !ok {
+		t.Fatalf("refusal output %q carries no FUU_STAMP", out)
+	}
+	mark, _, ok := strings.Cut(rest, "'")
+	if !ok {
+		t.Fatalf("refusal output %q carries no closing quote", out)
+	}
+	t.Setenv("FUU_STAMP", mark)
+
+	// The hook runs again at every later prompt, and those stay quiet.
+	for prompt := 2; prompt <= 3; prompt++ {
+		out, errOut = runEnv()
+		if out != "" || errOut != "" {
+			t.Fatalf("prompt %d after the refusal printed stdout %q stderr %q, want silence",
+				prompt, out, errOut)
+		}
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 var errNoVault = errors.New("no vault here, run fuu init or point --vault at one")
 
 // vaultPath resolves the vault for the current directory. An explicit --vault
-// wins. Otherwise fuu looks for the nearest fuu.toml up to and including the
+// wins. Otherwise fuu looks for the nearest .fuu.toml up to and including the
 // git root, so a checkout is one vault and nothing outside the repository is
 // ever reached by walking upwards.
 func vaultPath(cmd *cli.Command) (string, error) {
@@ -33,7 +33,7 @@ func findVault() (string, error) {
 		return "", fmt.Errorf("vault: %w", err)
 	}
 	for {
-		candidate := filepath.Join(dir, "fuu.toml")
+		candidate := filepath.Join(dir, ".fuu.toml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		} else if !errors.Is(err, os.ErrNotExist) {

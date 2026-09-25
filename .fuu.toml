@@ -1,0 +1,23 @@
+version = 1
+vaultid = "v_Hd7YtN8uD7gDGkWu"
+seq = 3
+blob = "_EaxAqPQUMp1IQvwaxSNLkHj0SHBuy3QOOraCFNlyaheBJA4FtTsXzr3dIkzCLye4A3P-IN9m-xvus0px04SpXDamk1iPzDaBERvQoHE443C7A8PyWAS06yu7UdgpaY4t3Tbukki8EWn7iU5aM48k6M-yuTfBTTxZcvTV-djqQ636TOIgStKoZohSRGfkIBWWgAciyXXbACnwvk4kzfs4W5UePtlguHbmG6kEPXaZ4oVw1tXJVJRgIdsGq0RiOLeukEG3-ZByucszug01U5-HUzBsGCVBphjReb-SXDHeF9uWek7kIMHmDUW2MRqNVjbrrn9CE3Gzai0WP3YGg"
+sig = "MEYCIQCz85SKOBOM0p_tebDmYwZyvw6kZJfTEkjR5z-5BUfEUAIhANq0J1xU6eJbSTlgZn2GV0TsPaBRCw2VFXqkA3rm-MsU"
+signer = "AvzQXCRIlu-oR05Gi_j0ycevmF027zUqjo-HCmOemra5"
+
+[device]
+  [device."p256:A5UBnrEHKIH8q2MCp6bvTNTSe_aWAfAZooTrMwj-JIcT"]
+    pub = "p256:A5UBnrEHKIH8q2MCp6bvTNTSe_aWAfAZooTrMwj-JIcT"
+    epub = "AmD_eiNHWk9y9Wyqf5hSQYxc6DQE2IDXpl9ZBmZWDOa_"
+    wrap = "YYUY4-rBOnc1zetS88Kwa92LdYgcZ66eSAbTizCSfBHh3MaCOlbjaoeaicyEyvDS_XnU0nLe0d4OLGGg_Ag7iKI7UO-oMhdf"
+
+[recovery]
+  kdf = "argon2id"
+  salt = "1ENW7fiz59Tg-FLdnwxMMw"
+  mem = 262144
+  time = 3
+  wrap = "PkvqRwEEXrP7pUoMKQtnZ6bQJ1oZ_sdLRoUubJS4bL38TbKaW4GV6lnA4odIvh25UKF-oI1fYx6v32hHBOExcsJgrH2vYJQE"
+
+[secret]
+  1TwmU93r_bb3TzYm = "_lecyJBHMH5qEsGXz9b9CZtOiX57fvjSENk3Drf1ObyQqe-2YPTmJHzC3C9unrat"
+  SS6mT0SFmLJbr3QR = "tzOu6nkjgMnYrs1qpNGvUOo2pAKBFFFDSpIxOMiYdJFHb1II0YWfEKJIsUYVGEk6ccc"

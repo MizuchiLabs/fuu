@@ -18,7 +18,7 @@ var (
 
 	vaultFlag = &cli.StringFlag{
 		Name:    "vault",
-		Usage:   "path to the vault file, otherwise the nearest fuu.toml in this repository",
+		Usage:   "path to the vault file, otherwise the nearest .fuu.toml in this repository",
 		Value:   "",
 		Sources: cli.EnvVars("FUU_VAULT"),
 	}

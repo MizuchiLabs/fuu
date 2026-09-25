@@ -124,9 +124,18 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	case errors.Is(err, errUnaccepted), errors.Is(err, errUntrusted),
 		errors.Is(err, errStale), errors.Is(err, errRevoked):
 		// The hook runs at every prompt, so a refusal is a message and a
-		// clean shell rather than a failed eval.
-		fmt.Fprintf(os.Stderr, "fuu: %v\n", err)
+		// clean shell rather than a failed eval. FUU_STAMP remembers what
+		// was already reported, so the message lands once per situation
+		// and not once per prompt.
+		mark := refusalMark(err, stamp)
+		if len(loaded) == 0 && os.Getenv("FUU_STAMP") == mark {
+			return nil
+		}
+		if os.Getenv("FUU_STAMP") != mark {
+			fmt.Fprintf(os.Stderr, "fuu: %v\n", err)
+		}
 		out.unload(loaded)
+		out.export("FUU_STAMP", mark)
 		return nil
 	case err != nil:
 		return err
@@ -165,6 +174,13 @@ func vaultStamp(path string) (string, error) {
 		return "", fmt.Errorf("env: %w", err)
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+// refusalMark fingerprints a refusal and the vault bytes behind it, so the
+// hook can tell an already reported situation from a new one.
+func refusalMark(err error, stamp string) string {
+	sum := sha256.Sum256([]byte(err.Error() + "\x00" + stamp))
+	return fmt.Sprintf("refused:%x", sum)
 }
 
 func cmdPrint(_ context.Context, cmd *cli.Command) error {

@@ -7,7 +7,7 @@ can touch, what it gets them, and where the line is drawn.
 
 ## The pieces
 
-- **Vault file.** `fuu.toml`, plain TOML, one per repository, meant to live in
+- **Vault file.** `.fuu.toml`, plain TOML, one per repository, meant to live in
   public git like a sops file. Holds the sealed values, the device wraps, the
   recovery wrap and a signature over all of it.
 - **Device key.** An ECDH key inside the TPM. The vault key is sealed to it.
@@ -134,7 +134,7 @@ protection.
 
 ## Someone puts a repo on your disk
 
-The hook maps the working directory to the nearest `fuu.toml` up to the git
+The hook maps the working directory to the nearest `.fuu.toml` up to the git
 root. A clone this machine has never accepted loads nothing. Accepting a
 vault is a deliberate step, and the pins are keyed on the vault identity, so
 somebody else's vault cannot pose as yours. Once you have accepted a vault,

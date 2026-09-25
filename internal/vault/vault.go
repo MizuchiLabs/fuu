@@ -40,13 +40,13 @@ import (
 )
 
 const (
-	Version      = 2
+	Version      = 1
 	vaultKeySize = 32
 
 	// blobAAD and valueAAD bind encrypted bodies to their slot, so one cannot
 	// be pasted over another.
-	blobAAD  = "fuu/v2/blob"
-	valueAAD = "fuu/v2/value\x00"
+	blobAAD  = "fuu/v1/blob"
+	valueAAD = "fuu/v1/value\x00"
 )
 
 var (
@@ -179,7 +179,7 @@ func (f *File) Save(path string) error {
 // means.
 func (f *File) Canonical() []byte {
 	var b strings.Builder
-	b.WriteString("fuu/v2/vault\n")
+	b.WriteString("fuu/v1/vault\n")
 	canonField(&b, "version", strconv.Itoa(f.Version))
 	canonField(&b, "vaultid", f.VaultID)
 	canonField(&b, "seq", strconv.FormatUint(f.Seq, 10))

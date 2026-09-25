@@ -35,7 +35,7 @@ const (
 
 	// nameInfo binds name tokens to this version, so a token from one format
 	// cannot address an entry of another.
-	nameInfo = "fuu/v2/name\x00"
+	nameInfo = "fuu/v1/name\x00"
 
 	// tokenSize keeps name tokens collision free for a personal vault while
 	// staying short enough to read in a diff.
