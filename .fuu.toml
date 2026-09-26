@@ -1,0 +1,9 @@
+version = 1
+salt = "34ZWhQtwWwapPnzScKkPZw"
+check = "9GXKIH13DflgfFZseqCff376uMZak5JqqmLsCedeW8qYpy-7L1F_E4SNDLWdynKud2L9seZPv44"
+
+[secret]
+  byykMpluPRBwEkBx = "_SJhHRVu5A2yZuzo04GMNfuSm4FQ1NM24xQCOk6rDgIdW_ajOcPAbfLx5mwj5AaDejDfl2wJPg"
+
+[disabled]
+  m3VFNwdEHwbL1Csc = "IH3rew44xFRHQIIZ621pwmvugWcVkBqzk5Ux_8dlyVOB3f4gkpw6RXy46wPBhx02UAAcplHRQMr-Xg"
