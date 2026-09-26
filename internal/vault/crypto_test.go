@@ -20,18 +20,18 @@ func TestKeyWrapRoundTrip(t *testing.T) {
 	recipient, stranger := newSoftKey(t), newSoftKey(t)
 	key := vaultKey(t)
 
-	ePub, body, err := wrapKey(recipient.Public(), key)
+	ePub, body, err := wrapKey(recipient.Public(), key, accountInfo)
 	if err != nil {
 		t.Fatalf("wrapKey: %v", err)
 	}
-	got, err := unwrapKey(recipient, ePub, body)
+	got, err := unwrapKey(recipient, ePub, body, accountInfo)
 	if err != nil {
 		t.Fatalf("unwrapKey: %v", err)
 	}
 	if !bytes.Equal(got, key) {
 		t.Fatal("unwrapKey did not return the wrapped key")
 	}
-	if _, err := unwrapKey(stranger, ePub, body); err == nil {
+	if _, err := unwrapKey(stranger, ePub, body, accountInfo); err == nil {
 		t.Fatal("a wrap for one chip opened with another")
 	}
 }

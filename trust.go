@@ -18,8 +18,7 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-// The only command that accepts a vault key this machine has not vouched for
-// yet, everywhere else there is no trust on first use.
+// The only command that pins a folder, everywhere else there is no trust on first use.
 func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if err != nil {
@@ -32,12 +31,13 @@ func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = dk.Close() }()
 
-	return trust(path, dk, deviceName(cmd))
+	return trust(path, dk)
 }
 
-// Proving the file takes the recovery passphrase, unless this vault key is
-// already pinned elsewhere and the operator agrees.
-func trust(path string, dk vault.DeviceKey, name string) error {
+// Only a vault sealed to this machine's account can be trusted, so a
+// stranger's repository never loads. What is left to confirm is that this
+// folder, which may hold a copy of any of your vaults, should load it.
+func trust(path string, dk vault.DeviceKey) error {
 	f, err := vault.Load(path)
 	if err != nil {
 		return err
@@ -50,79 +50,45 @@ func trust(path string, dk vault.DeviceKey, name string) error {
 	if err != nil {
 		return err
 	}
-
-	key, err := f.Unseal(dk)
-	enrolled := err == nil
-	if err != nil && !errors.Is(err, vault.ErrNotEnrolled) {
-		return err
-	}
-
-	if enrolled {
-		fp := vault.Fingerprint(key)
-		if pins[dir] == fp {
-			fmt.Println("already trusted")
-			return nil
-		}
-		// A second checkout of an already pinned vault, one word from the operator is enough.
-		if other, ok := pinnedElsewhere(pins, dir, fp); ok {
-			same, err := confirm(fmt.Sprintf(
-				"this is the same vault as %s, load it in %s too", sanitize(other), sanitize(dir),
-			))
-			if err != nil {
-				return err
-			}
-			if !same {
-				return errors.New("aborted, nothing recorded")
-			}
-			pins[dir] = fp
-			if err := savePins(pins); err != nil {
-				return err
-			}
-			fmt.Printf("trusted %s\n", sanitize(dir))
-			return nil
-		}
-	}
-
-	pass, err := readSecret("recovery passphrase")
+	account, err := unsealAccount(dk)
 	if err != nil {
 		return err
 	}
-	pkey, err := f.UnsealPassphrase(pass)
+	key, id, err := f.Open(account)
+	if errors.Is(err, vault.ErrWrongAccount) {
+		return fmt.Errorf("%w, if the passphrase was rotated elsewhere run fuu login with the new one", err)
+	}
 	if err != nil {
-		return errors.New("the recovery passphrase does not open this vault")
+		return err
 	}
-	if enrolled && !bytes.Equal(key, pkey) {
-		return errors.New(
-			"this machine's entry holds a different key than the recovery entry, the file was tampered with",
-		)
+	if pins[dir] == id {
+		fmt.Println("already trusted")
+		return nil
 	}
 
-	// The whole file authenticates before anything is recorded or enrolled.
-	if _, err := f.Secrets(pkey); err != nil {
+	// The whole file authenticates before anything is recorded.
+	if _, err := f.Secrets(key); err != nil {
 		return err
 	}
-	if _, err := f.DisabledSecrets(pkey); err != nil {
-		return err
-	}
-	if _, err := f.Devices(pkey); err != nil {
+	if _, err := f.DisabledSecrets(key); err != nil {
 		return err
 	}
 
-	fp := vault.Fingerprint(pkey)
-	if !enrolled {
-		if err := f.AddDevice(pkey, dk.Public(), name); err != nil {
-			return err
-		}
-		if err := f.Save(path); err != nil {
-			return err
-		}
-		fmt.Printf("enrolled this machine as %s, commit .fuu.toml\n", name)
+	question := "load this vault into your shell in " + sanitize(dir)
+	if other, ok := pinnedElsewhere(pins, dir, id); ok {
+		question = fmt.Sprintf("this is the same vault as %s, load it in %s too", sanitize(other), sanitize(dir))
 	}
-
 	if pins[dir] != "" {
-		repin(pins, pins[dir], fp)
+		question = fmt.Sprintf("%s holds another vault than it was trusted for, load the new one", sanitize(dir))
 	}
-	pins[dir] = fp
+	ok, err := confirm(question)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("aborted, nothing recorded")
+	}
+	pins[dir] = id
 	if err := savePins(pins); err != nil {
 		return err
 	}
@@ -174,15 +140,6 @@ func savePins(pins map[string]string) error {
 		return fmt.Errorf("trust: %w", err)
 	}
 	return nil
-}
-
-// Rotation changes one vault key, and every folder of that vault moves with it.
-func repin(pins map[string]string, from, to string) {
-	for dir, fp := range pins {
-		if fp == from {
-			pins[dir] = to
-		}
-	}
 }
 
 func pinnedElsewhere(pins map[string]string, dir, fp string) (string, bool) {

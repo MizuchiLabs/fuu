@@ -103,20 +103,3 @@ func identName(name string) bool {
 	}
 	return true
 }
-
-// validDeviceName allows hostnames with dots and dashes, nothing longer or stranger.
-func validDeviceName(name string) bool {
-	if len(name) < 1 || len(name) > 64 {
-		return false
-	}
-	for i := range len(name) {
-		c := name[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case c == '.', c == '_', c == '-':
-		default:
-			return false
-		}
-	}
-	return true
-}

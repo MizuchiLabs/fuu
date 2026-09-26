@@ -13,6 +13,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte("not toml at all"))
 	f.Add([]byte("version = 1\n"))
+	f.Add([]byte("version = 1\nsalt = \"x\"\ncheck = \"y\"\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		vf, err := Parse(data)
 		if err != nil {
@@ -21,7 +22,7 @@ func FuzzParse(f *testing.F) {
 			}
 			return
 		}
-		if vf.Device == nil || vf.Secret == nil {
+		if vf.Secret == nil || vf.Disabled == nil {
 			t.Fatal("Parse handed out a vault with nil maps")
 		}
 	})
@@ -52,6 +53,21 @@ func FuzzOpenBody(f *testing.F) {
 		plain, err := openBody(aead, body, aad)
 		if err != nil && plain != nil {
 			t.Fatal("openBody returned plaintext alongside an error")
+		}
+	})
+}
+
+// The account file sits in the config dir, a malformed one must fail as an error, never a panic.
+func FuzzParseAccount(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte("version = 1\ndevice = \"p256:x\"\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		a, err := ParseAccount(data)
+		if err != nil {
+			if a != nil {
+				t.Fatal("ParseAccount returned an account alongside an error")
+			}
+			return
 		}
 	})
 }

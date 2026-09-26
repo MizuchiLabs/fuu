@@ -1,11 +1,11 @@
 // Package vault is the on disk vault: one TOML file per repository, meant to be committed in public.
-// Only the format version, the envelopes and the opaque entry tokens are readable without the vault key.
+// Only the format version, the salt and the opaque entry tokens are readable without the vault key.
 package vault
 
 import (
 	"bytes"
-	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -19,48 +19,30 @@ import (
 )
 
 const (
-	// Version is the vault file format this build writes and reads.
-	Version      = 1
 	vaultKeySize = 32
+
+	// saltSize and idSize are the random bytes behind a vault's salt and its id.
+	saltSize = 16
+	idSize   = 16
 
 	// maxFileBytes caps the untrusted file before any hashing or parsing.
 	maxFileBytes = 5 << 20 // 5MB
 )
 
 var (
-	ErrNotEnrolled = errors.New("this machine is not enrolled in this vault")
-	ErrConflict    = errors.New("the vault changed on disk while fuu was working, run the command again")
-	ErrNoKey       = errors.New("no such key")
-	ErrDisabled    = errors.New("this key is commented out in fuu edit, uncomment it there to use it")
-	ErrNoDevice    = errors.New("no such device")
-	ErrDupName     = errors.New("device name already taken")
-	ErrDupDevice   = errors.New("this device is already enrolled")
-	ErrLast        = errors.New("cannot remove the last device")
-	ErrBadName     = errors.New("not a valid name, want a shell identifier that does not configure the shell itself")
-	ErrNulValue    = errors.New("values cannot contain NUL bytes, the shell would drop them")
-
-	errBadVersion = errors.New("unsupported version")
+	ErrWrongAccount = errors.New("this vault is not sealed to the account on this machine")
+	ErrConflict     = errors.New("the vault changed on disk while fuu was working, run the command again")
+	ErrNoKey        = errors.New("no such key")
+	ErrDisabled     = errors.New("this key is commented out in fuu edit, uncomment it there to use it")
+	ErrBadName      = errors.New("not a valid name, want a shell identifier that does not configure the shell itself")
+	ErrNulValue     = errors.New("values cannot contain NUL bytes, the shell would drop them")
 )
 
-// Recovery is the vault key sealed to the recovery passphrase.
-type Recovery struct {
-	Salt string `toml:"salt"`
-	Wrap string `toml:"wrap"`
-}
-
-// Device is one enrolled chip's wrap of the vault key, its name sealed under
-// it so the file says nothing about whose chips are enrolled.
-type Device struct {
-	EPub string `toml:"epub"`
-	Wrap string `toml:"wrap"`
-	Name string `toml:"name"`
-}
-
-// File is the whole vault. Everything but Version is an envelope, a salt or an opaque token.
+// File is the whole vault. Everything but Version is a salt, an envelope or an opaque token.
 type File struct {
 	Version  int               `toml:"version"`
-	Recovery Recovery          `toml:"recovery"`
-	Device   map[string]Device `toml:"device"`
+	Salt     string            `toml:"salt"`
+	Check    string            `toml:"check"`
 	Secret   map[string]string `toml:"secret"`
 	Disabled map[string]string `toml:"disabled,omitempty"`
 
@@ -99,11 +81,8 @@ func Parse(data []byte) (*File, error) {
 	if err := toml.Unmarshal(data, f); err != nil {
 		return nil, fmt.Errorf("vault: parse: %w", err)
 	}
-	if f.Version != Version {
-		return nil, fmt.Errorf("%w %d, this build reads %d", errBadVersion, f.Version, Version)
-	}
-	if f.Device == nil {
-		f.Device = map[string]Device{}
+	if err := checkVersion("vault", f.Version); err != nil {
+		return nil, err
 	}
 	if f.Secret == nil {
 		f.Secret = map[string]string{}
@@ -115,26 +94,23 @@ func Parse(data []byte) (*File, error) {
 	return f, nil
 }
 
-// New creates a vault with a fresh vault key sealed to dk and passphrase,
-// and returns that key for this session.
-func New(dk DeviceKey, name, passphrase string) (*File, []byte, error) {
-	key := make([]byte, vaultKeySize)
-	if _, err := rand.Read(key); err != nil {
-		return nil, nil, fmt.Errorf("vault: generate vault key: %w", err)
+// New creates a vault under a fresh salt and id, its key derived from the
+// account seed, and returns that key and id for this session.
+func New(account []byte) (*File, []byte, string, error) {
+	id := make([]byte, idSize)
+	if _, err := rand.Read(id); err != nil {
+		return nil, nil, "", fmt.Errorf("vault: generate vault id: %w", err)
 	}
 	f := &File{
 		Version:  Version,
-		Device:   map[string]Device{},
 		Secret:   map[string]string{},
 		Disabled: map[string]string{},
 	}
-	if err := f.AddDevice(key, dk.Public(), name); err != nil {
-		return nil, nil, err
+	key, err := f.reseal(account, id)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	if err := f.setRecovery(key, passphrase); err != nil {
-		return nil, nil, err
-	}
-	return f, key, nil
+	return f, key, encodeID(id), nil
 }
 
 // Save refuses when the file on disk is not the bytes this File was loaded
@@ -162,34 +138,51 @@ func (f *File) Save(path string) error {
 	return nil
 }
 
-// Unseal opens the vault key with this machine's device key.
-func (f *File) Unseal(dk DeviceKey) ([]byte, error) {
-	d, ok := f.Device[Pub(dk.Public())]
-	if !ok {
-		return nil, ErrNotEnrolled
+// Open derives this vault's key from the account seed and returns it with the
+// vault id. A vault sealed to any other account is ErrWrongAccount.
+func (f *File) Open(account []byte) ([]byte, string, error) {
+	salt, err := base64.RawURLEncoding.DecodeString(f.Salt)
+	if err != nil || len(salt) != saltSize {
+		return nil, "", errors.New("vault: the salt is not 16 bytes of base64, the file was tampered with")
 	}
-	return unwrapKey(dk, d.EPub, d.Wrap)
+	key, err := deriveVaultKey(account, salt)
+	if err != nil {
+		return nil, "", err
+	}
+	id, err := f.id(key)
+	if err != nil {
+		return nil, "", err
+	}
+	return key, id, nil
 }
 
-// UnsealPassphrase opens the vault key with the recovery passphrase.
-func (f *File) UnsealPassphrase(pass string) ([]byte, error) {
-	return unwrapPassphrase(pass, f.Recovery.Salt, f.Recovery.Wrap)
+// id opens the vault id, the identity a folder is pinned to. Only the right
+// key opens it, so it is also the proof of which account the vault belongs to.
+func (f *File) id(key []byte) (string, error) {
+	id, err := openValue(key, f.Check, checkAAD)
+	if err != nil {
+		return "", ErrWrongAccount
+	}
+	if len(id) != idSize {
+		return "", errors.New("vault: the vault id is not 16 bytes, the file was tampered with")
+	}
+	return encodeID(id), nil
 }
 
 // Secrets opens the enabled entries as name to value, refusing any entry
 // not sealed under this key.
 func (f *File) Secrets(key []byte) (map[string]string, error) {
-	return f.entries(key, f.Secret, entryAAD)
+	return entries(key, f.Secret, entryAAD)
 }
 
 // DisabledSecrets opens the commented out entries the same way, so a vault
 // holding any authenticates as a whole.
 func (f *File) DisabledSecrets(key []byte) (map[string]string, error) {
-	return f.entries(key, f.Disabled, disabledAAD)
+	return entries(key, f.Disabled, disabledAAD)
 }
 
 // entries opens one whole table under the aad its bodies were sealed with.
-func (f *File) entries(key []byte, table map[string]string, aad string) (map[string]string, error) {
+func entries(key []byte, table map[string]string, aad string) (map[string]string, error) {
 	out := make(map[string]string, len(table))
 	for tok, body := range table {
 		name, value, err := openEntry(key, tok, body, aad)
@@ -219,29 +212,6 @@ func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 		return "", "", fmt.Errorf("vault: secret %s: %w", tok, ErrNulValue)
 	}
 	return string(name), string(value), nil
-}
-
-// Devices returns pub to name. A name that does not open means a device entry
-// was added behind the key, which rotation must not swallow.
-func (f *File) Devices(key []byte) (map[string]string, error) {
-	out := make(map[string]string, len(f.Device))
-	for pub, d := range f.Device {
-		if _, err := parsePub(pub); err != nil {
-			return nil, err
-		}
-		name, err := openValue(key, d.Name, deviceAAD+pub)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"vault: device %s is not sealed under this vault key, the file was tampered with",
-				pub,
-			)
-		}
-		if !validDeviceName(string(name)) {
-			return nil, fmt.Errorf("vault: device %s has an invalid name, the file was tampered with", pub)
-		}
-		out[pub] = string(name)
-	}
-	return out, nil
 }
 
 // Set stores one value under the token its name derives to, rewriting only that body.
@@ -305,59 +275,16 @@ func (f *File) Unset(key []byte, name string) error {
 	return nil
 }
 
-// AddDevice records the device as name, no secret value is touched.
-func (f *File) AddDevice(key []byte, pub *ecdh.PublicKey, name string) error {
-	if !validDeviceName(name) {
-		return fmt.Errorf("%w %q", ErrBadName, name)
-	}
-	// Devices authenticates every entry first, so a smuggled name or wrap is
-	// caught before anything is sealed to it.
-	devices, err := f.Devices(key)
-	if err != nil {
-		return err
-	}
-	want := Pub(pub)
-	if _, ok := devices[want]; ok {
-		return fmt.Errorf("%w %s, already enrolled as %q", ErrDupDevice, want, devices[want])
-	}
-	// A taken name is never overwritten, that would revoke the device holding it without a word.
-	for _, other := range devices {
-		if other == name {
-			return fmt.Errorf("%w %q, pick another name or revoke it first", ErrDupName, name)
-		}
-	}
-
-	ePub, body, err := wrapKey(pub, key)
-	if err != nil {
-		return err
-	}
-	sealed, err := sealValue(key, []byte(name), deviceAAD+want)
-	if err != nil {
-		return err
-	}
-	f.Device[want] = Device{EPub: ePub, Wrap: body, Name: sealed}
-	return nil
-}
-
-// RemoveDevice is not retroactive: anyone who already unsealed the vault key
-// keeps it, callers rotate right after.
-func (f *File) RemoveDevice(pub string) error {
-	if _, ok := f.Device[pub]; !ok {
-		return fmt.Errorf("%w %q", ErrNoDevice, pub)
-	}
-	if len(f.Device) == 1 {
-		return ErrLast
-	}
-	delete(f.Device, pub)
-	return nil
-}
-
-// Rotate rewraps every device and value under a new key, sealing it to a
-// fresh passphrase. Anything unauthenticated aborts first.
-func (f *File) Rotate(old []byte, passphrase string) ([]byte, error) {
-	devices, err := f.Devices(old)
+// Rotate reseals every value under a fresh salt of account, which may be a
+// new account seed, keeping the vault id. Anything unauthenticated aborts first.
+func (f *File) Rotate(old, account []byte) ([]byte, error) {
+	id, err := f.id(old)
 	if err != nil {
 		return nil, err
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(id)
+	if err != nil {
+		return nil, fmt.Errorf("vault: decode vault id: %w", err)
 	}
 	secrets, err := f.Secrets(old)
 	if err != nil {
@@ -367,75 +294,56 @@ func (f *File) Rotate(old []byte, passphrase string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	key := make([]byte, vaultKeySize)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("vault: generate vault key: %w", err)
+	key, err := f.reseal(account, raw)
+	if err != nil {
+		return nil, err
 	}
-
-	f.Device = map[string]Device{}
-	for pub, name := range devices {
-		recipient, err := parsePub(pub)
-		if err != nil {
-			return nil, err
-		}
-		ePub, body, err := wrapKey(recipient, key)
-		if err != nil {
-			return nil, err
-		}
-		sealed, err := sealValue(key, []byte(name), deviceAAD+pub)
-		if err != nil {
-			return nil, err
-		}
-		f.Device[pub] = Device{EPub: ePub, Wrap: body, Name: sealed}
-	}
-
-	f.Secret = map[string]string{}
-	for _, name := range slices.Sorted(maps.Keys(secrets)) {
-		if err := f.Set(key, name, secrets[name]); err != nil {
-			return nil, err
-		}
-	}
-	f.Disabled = map[string]string{}
-	for _, name := range slices.Sorted(maps.Keys(disabled)) {
-		if err := f.Set(key, name, disabled[name]); err != nil {
-			return nil, err
-		}
-		if err := f.Disable(key, name); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := f.setRecovery(key, passphrase); err != nil {
+	if err := f.fill(key, secrets, disabled); err != nil {
 		return nil, err
 	}
 	return key, nil
 }
 
-func (f *File) setRecovery(key []byte, passphrase string) error {
-	salt, body, err := wrapPassphrase(passphrase, key)
-	if err != nil {
-		return err
+// reseal picks a fresh salt, derives its key and seals the id under it,
+// emptying both tables for fill.
+func (f *File) reseal(account, id []byte) ([]byte, error) {
+	salt := make([]byte, saltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("vault: generate salt: %w", err)
 	}
-	f.Recovery = Recovery{Salt: salt, Wrap: body}
+	key, err := deriveVaultKey(account, salt)
+	if err != nil {
+		return nil, err
+	}
+	check, err := sealValue(key, id, checkAAD)
+	if err != nil {
+		return nil, err
+	}
+	f.Salt = base64.RawURLEncoding.EncodeToString(salt)
+	f.Check = check
+	f.Secret = map[string]string{}
+	f.Disabled = map[string]string{}
+	return key, nil
+}
+
+// fill seals every value under key, in name order so a rewrite is reproducible to read.
+func (f *File) fill(key []byte, secrets, disabled map[string]string) error {
+	for _, name := range slices.Sorted(maps.Keys(secrets)) {
+		if err := f.Set(key, name, secrets[name]); err != nil {
+			return err
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(disabled)) {
+		if err := f.Set(key, name, disabled[name]); err != nil {
+			return err
+		}
+		if err := f.Disable(key, name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// Fingerprint names a vault key, the identity a folder is pinned to.
-func Fingerprint(key []byte) string {
-	return tokenOf(key, fingerprintInfo)
-}
-
-// Pub encodes a P-256 public key as "p256:" plus the compressed point.
-func Pub(pub *ecdh.PublicKey) string {
-	return "p256:" + compressPoint(pub)
-}
-
-// parsePub reads what Pub writes.
-func parsePub(s string) (*ecdh.PublicKey, error) {
-	rest, ok := strings.CutPrefix(s, "p256:")
-	if !ok {
-		return nil, fmt.Errorf("vault: parse public key: %q has no p256: prefix", s)
-	}
-	return parsePoint(rest)
+func encodeID(id []byte) string {
+	return base64.RawURLEncoding.EncodeToString(id)
 }

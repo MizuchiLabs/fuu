@@ -123,7 +123,7 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	_, f, key, _, err := unlock(cmd)
+	_, f, key, err := unlock(cmd)
 	values := map[string]string{}
 	if err == nil {
 		values, err = f.Secrets(key)
@@ -224,7 +224,7 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 		return errors.New("run: want <command> [args...]")
 	}
 
-	_, f, key, _, err := unlock(cmd)
+	_, f, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}

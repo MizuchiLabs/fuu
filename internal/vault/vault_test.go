@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -29,12 +30,18 @@ func (k *softKey) Public() *ecdh.PublicKey { return k.key.PublicKey() }
 
 func (k *softKey) ECDH(peer *ecdh.PublicKey) ([]byte, error) { return k.key.ECDH(peer) }
 
-// newFixture builds a vault with one device and two values.
-func newFixture(t *testing.T) (f *File, dk *softKey, key []byte) {
+// newAccount is a random account seed, argon2id is too slow to run per test.
+func newAccount(t *testing.T) []byte {
 	t.Helper()
-	dk = newSoftKey(t)
+	return vaultKey(t)
+}
 
-	f, key, err := New(dk, "laptop", "open sesame")
+// newFixture builds a vault under a fresh account with two values.
+func newFixture(t *testing.T) (f *File, account, key []byte) {
+	t.Helper()
+	account = newAccount(t)
+
+	f, key, _, err := New(account)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -44,12 +51,12 @@ func newFixture(t *testing.T) (f *File, dk *softKey, key []byte) {
 			t.Fatalf("Set %s: %v", name, err)
 		}
 	}
-	return f, dk, key
+	return f, account, key
 }
 
 // The open path the shell hook uses, with values that need quoting to survive in a shell.
 func TestRoundTrip(t *testing.T) {
-	f, dk, key := newFixture(t)
+	f, account, key := newFixture(t)
 	if err := f.Set(key, "QUOTED", "line one\nit's \"fine\""); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -62,9 +69,9 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	unsealed, err := got.Unseal(dk)
+	unsealed, _, err := got.Open(account)
 	if err != nil {
-		t.Fatalf("Unseal: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	values, err := got.Secrets(unsealed)
 	if err != nil {
@@ -109,38 +116,67 @@ func TestSecretsRefusesSwappedBodies(t *testing.T) {
 	}
 }
 
-// Someone with repo write access adds a device entry of their own, and the next rotation would seal the new key to it.
-func TestForeignDeviceRefused(t *testing.T) {
-	f, _, key := newFixture(t)
-
-	attacker := newSoftKey(t)
-	ePub, body, err := wrapKey(attacker.Public(), make([]byte, vaultKeySize))
-	if err != nil {
-		t.Fatalf("wrapKey: %v", err)
-	}
-	pub := Pub(attacker.Public())
-	f.Device[pub] = Device{EPub: ePub, Wrap: body, Name: "pwned"}
-
-	if _, err := f.Secrets(key); err != nil {
-		t.Fatalf("Secrets of the honest entries: %v", err)
-	}
-	if _, err := f.Devices(key); err == nil {
-		t.Fatal("Devices accepted a device entry sealed outside the vault key")
-	}
-	if _, err := f.Rotate(key, "new passphrase"); err == nil {
-		t.Fatal("Rotate ran past a device entry sealed outside the vault key")
+// A vault sealed to one account does not open under another.
+func TestOpenRefusesOtherAccount(t *testing.T) {
+	f, _, _ := newFixture(t)
+	if _, _, err := f.Open(newAccount(t)); !errors.Is(err, ErrWrongAccount) {
+		t.Fatalf("Open under another account = %v, want ErrWrongAccount", err)
 	}
 }
 
-// A rotated vault keeps every value and moves recovery to the new passphrase.
-func TestRotateRewraps(t *testing.T) {
-	f, dk, key := newFixture(t)
+// A salt or check lifted from another vault of the same account is refused, not reinterpreted.
+func TestOpenRefusesSpliced(t *testing.T) {
+	f, account, _ := newFixture(t)
+	other, _, _, err := New(account)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
-	fresh, err := f.Rotate(key, "new passphrase")
+	spliced := *f
+	spliced.Check = other.Check
+	if _, _, err := spliced.Open(account); !errors.Is(err, ErrWrongAccount) {
+		t.Fatalf("Open with another vault's check = %v, want ErrWrongAccount", err)
+	}
+
+	// Both halves from the other vault open as that vault, whose key then refuses these entries.
+	spliced.Salt = other.Salt
+	key, _, err := spliced.Open(account)
+	if err != nil {
+		t.Fatalf("Open with both halves swapped: %v", err)
+	}
+	if _, err := spliced.Secrets(key); err == nil {
+		t.Fatal("entries of one vault opened under another vault's key")
+	}
+
+	spliced.Salt = "short"
+	if _, _, err := spliced.Open(account); err == nil {
+		t.Fatal("Open accepted a malformed salt")
+	}
+}
+
+// A rotated vault keeps every value and its id, under a new salt and key.
+func TestRotateKeepsID(t *testing.T) {
+	f, account, key := newFixture(t)
+	_, id, err := f.Open(account)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	salt := f.Salt
+
+	fresh, err := f.Rotate(key, account)
 	if err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
-
+	if f.Salt == salt || bytes.Equal(fresh, key) {
+		t.Fatal("Rotate kept the salt or the key")
+	}
+	opened, rotatedID, err := f.Open(account)
+	if err != nil {
+		t.Fatalf("Open after rotate: %v", err)
+	}
+	if !bytes.Equal(opened, fresh) || rotatedID != id {
+		t.Fatal("the rotated vault opens to another key or id")
+	}
 	values, err := f.Secrets(fresh)
 	if err != nil {
 		t.Fatalf("Secrets after rotate: %v", err)
@@ -148,32 +184,44 @@ func TestRotateRewraps(t *testing.T) {
 	if values["API_KEY"] != "s3cret" {
 		t.Fatalf("values after rotate = %v", values)
 	}
-	unsealed, err := f.Unseal(dk)
-	if err != nil {
-		t.Fatalf("Unseal after rotate: %v", err)
-	}
-	if !bytes.Equal(unsealed, fresh) {
-		t.Fatal("the device unsealed a different key than the rotated one")
-	}
 	if _, err := f.Secrets(key); err == nil {
 		t.Fatal("the old vault key still opens the entries")
 	}
-	if _, err := f.UnsealPassphrase("new passphrase"); err != nil {
-		t.Fatalf("the new recovery wrap does not open: %v", err)
+}
+
+// Moving a vault to a new account seed cuts the old seed off.
+func TestRotateToNewAccount(t *testing.T) {
+	f, account, key := newFixture(t)
+	next := newAccount(t)
+
+	if _, err := f.Rotate(key, next); err != nil {
+		t.Fatalf("Rotate: %v", err)
 	}
-	if _, err := f.UnsealPassphrase("open sesame"); err == nil {
-		t.Fatal("the old recovery passphrase still works after rotate")
+	if _, _, err := f.Open(next); err != nil {
+		t.Fatalf("Open under the new account: %v", err)
+	}
+	if _, _, err := f.Open(account); !errors.Is(err, ErrWrongAccount) {
+		t.Fatalf("Open under the old account = %v, want ErrWrongAccount", err)
 	}
 }
 
-func TestRemoveLastDeviceIsRefused(t *testing.T) {
-	f, dk, _ := newFixture(t)
-
-	if err := f.RemoveDevice(Pub(dk.Public())); !errors.Is(err, ErrLast) {
-		t.Fatalf("RemoveDevice of the last device = %v, want ErrLast", err)
+// Rotate authenticates the whole file before sealing anything new.
+func TestRotateRefusesTampered(t *testing.T) {
+	f, account, key := newFixture(t)
+	f.Secret[token(key, "API_KEY")] = f.Secret[token(key, "DATABASE_URL")]
+	if _, err := f.Rotate(key, account); err == nil {
+		t.Fatal("Rotate ran past a tampered entry")
 	}
-	if len(f.Device) != 1 {
-		t.Fatalf("the last device was removed anyway, %d left", len(f.Device))
+}
+
+// The passphrase survives the ways people copy it, and nothing else opens the same seed.
+func TestDeriveAccount(t *testing.T) {
+	want := DeriveAccount("ABCDEFGH23456")
+	if !bytes.Equal(DeriveAccount(" abcd-efgh-2345 6\n"), want) {
+		t.Fatal("case, dashes and spaces changed the account seed")
+	}
+	if bytes.Equal(DeriveAccount("ABCDEFGH23457"), want) {
+		t.Fatal("two passphrases derived one seed")
 	}
 }
 
@@ -187,7 +235,7 @@ func TestSaveConflict(t *testing.T) {
 	}
 
 	// A vault from scratch would overwrite an existing file.
-	fresh := &File{Version: Version, Device: map[string]Device{}, Secret: map[string]string{}}
+	fresh := &File{Version: Version, Secret: map[string]string{}}
 	if err := fresh.Save(path); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Save over an existing file = %v, want ErrConflict", err)
 	}
@@ -207,14 +255,6 @@ func TestSaveConflict(t *testing.T) {
 	}
 	if err := second.Save(path); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Save of the stale copy = %v, want ErrConflict", err)
-	}
-}
-
-func TestWrongPassphraseFails(t *testing.T) {
-	f, _, _ := newFixture(t)
-
-	if _, err := f.UnsealPassphrase("wrong"); err == nil {
-		t.Fatal("the wrong passphrase opened the recovery wrap")
 	}
 }
 
@@ -241,22 +281,6 @@ func TestValidName(t *testing.T) {
 	} {
 		if got := ValidName(tc.name); got != tc.want {
 			t.Fatalf("ValidName(%q) = %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestValidDeviceName(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		want bool
-	}{
-		{"my-laptop.local", true},
-		{"laptop", true},
-		{"", false},
-		{"has space", false},
-	} {
-		if got := validDeviceName(tc.name); got != tc.want {
-			t.Fatalf("validDeviceName(%q) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -367,14 +391,14 @@ func TestDisabledBodyRefusesTableMove(t *testing.T) {
 	}
 }
 
-// A rotation rewraps commented out entries too, under the disabled slot of the new key.
+// A rotation reseals commented out entries too, under the disabled slot of the new key.
 func TestRotateKeepsDisabled(t *testing.T) {
-	f, dk, key := newFixture(t)
+	f, account, key := newFixture(t)
 	if err := f.Disable(key, "API_KEY"); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
 
-	fresh, err := f.Rotate(key, "new passphrase")
+	fresh, err := f.Rotate(key, account)
 	if err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
@@ -391,15 +415,19 @@ func TestRotateKeepsDisabled(t *testing.T) {
 	if _, err = f.DisabledSecrets(key); err == nil {
 		t.Fatal("the old vault key still opens the disabled entries")
 	}
-	if _, err = f.Unseal(dk); err != nil {
-		t.Fatalf("Unseal after rotate: %v", err)
-	}
 }
 
 // This build reads its own format version and nothing else.
 func TestParseRefusesUnknownVersion(t *testing.T) {
 	if _, err := Parse([]byte("version = 3\n")); !errors.Is(err, errBadVersion) {
 		t.Fatalf("Parse of version 3 = %v, want errBadVersion", err)
+	}
+}
+
+// Every label is built on domain, so domain has to name the version it claims.
+func TestDomainMatchesVersion(t *testing.T) {
+	if want := fmt.Sprintf("fuu/v%d/", Version); domain != want {
+		t.Fatalf("domain = %q, want %q to match Version", domain, want)
 	}
 }
 
@@ -414,22 +442,6 @@ func TestSecretsRefusesNULValue(t *testing.T) {
 	f.Secret[tok] = body
 	if _, err := f.Secrets(key); err == nil {
 		t.Fatal("Secrets accepted a value with a NUL byte")
-	}
-}
-
-// A name sealed behind the vault key still has to be a name.
-func TestDevicesRefusesInvalidName(t *testing.T) {
-	f, dk, key := newFixture(t)
-	pub := Pub(dk.Public())
-	d := f.Device[pub]
-	name, err := sealValue(key, []byte("evil\x1bname"), deviceAAD+pub)
-	if err != nil {
-		t.Fatalf("sealValue: %v", err)
-	}
-	d.Name = name
-	f.Device[pub] = d
-	if _, err := f.Devices(key); err == nil {
-		t.Fatal("Devices accepted a name with control bytes")
 	}
 }
 

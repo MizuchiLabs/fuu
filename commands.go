@@ -27,15 +27,23 @@ var (
 var commands = []*cli.Command{
 	{
 		Name:   "init",
-		Usage:  "create a vault in this repository and enroll this machine",
+		Usage:  "create a vault in this repository, and the account on first use",
 		Action: cmdInit,
-		Flags:  []cli.Flag{&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"}},
+	},
+	{
+		Name:   "login",
+		Usage:  "unlock your account on this machine with the account passphrase",
+		Action: cmdLogin,
+	},
+	{
+		Name:   "logout",
+		Usage:  "forget the account on this machine",
+		Action: cmdLogout,
 	},
 	{
 		Name:   "trust",
-		Usage:  "trust this vault in this folder and enroll this machine",
+		Usage:  "load this vault in this folder",
 		Action: cmdTrust,
-		Flags:  []cli.Flag{&cli.StringFlag{Name: "name", Usage: "device name, defaults to the hostname"}},
 	},
 	{
 		Name:      "set",
@@ -85,24 +93,11 @@ var commands = []*cli.Command{
 	},
 	{
 		Name:   "rotate",
-		Usage:  "replace the vault key and rewrap everything",
+		Usage:  "reseal this vault under a fresh key, or with --passphrase every vault under a new account passphrase",
 		Action: cmdRotate,
-	},
-	{
-		Name:  "device",
-		Usage: "manage enrolled devices",
-		Commands: []*cli.Command{
-			{
-				Name:   "ls",
-				Usage:  "list enrolled devices",
-				Action: cmdDeviceLs,
-			},
-			{
-				Name:      "rm",
-				Usage:     "remove a device and rotate the vault key",
-				ArgsUsage: "<name>",
-				Action:    cmdDeviceRm,
-			},
-		},
+		Flags: []cli.Flag{&cli.BoolFlag{
+			Name:  "passphrase",
+			Usage: "replace the account passphrase and move every trusted vault on this machine to it",
+		}},
 	},
 }

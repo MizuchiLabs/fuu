@@ -44,13 +44,21 @@ func readSecret(label string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// Goes to stdout so saving it is a redirect rather than a hunt through the scrollback.
+// Goes to stdout so saving it is a redirect rather than a hunt through the
+// scrollback. Grouped in fours for reading, login ignores the dashes.
 func showPassphrase(pass string) {
-	fmt.Println("your new recovery passphrase:")
+	groups := make([]string, 0, len(pass)/4+1)
+	for len(pass) > 4 {
+		groups = append(groups, pass[:4])
+		pass = pass[4:]
+	}
+	groups = append(groups, pass)
+
+	fmt.Println("your account passphrase, one for every vault:")
 	fmt.Println()
-	fmt.Printf("    %s\n", pass)
+	fmt.Printf("    %s\n", strings.Join(groups, "-"))
 	fmt.Println()
-	fmt.Println("store it in your password manager now. It is the only way to enroll")
-	fmt.Println("another machine or to recover from a cleared TPM, and nobody can")
-	fmt.Println("recover it for you.")
+	fmt.Println("store it in your password manager now. It is how another machine")
+	fmt.Println("logs in and how this one comes back from a cleared TPM, and nobody")
+	fmt.Println("can recover it for you.")
 }

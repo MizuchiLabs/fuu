@@ -43,7 +43,7 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	path, f, key, _, err := unlock(cmd)
+	path, f, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func cmdUnset(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	path, f, key, _, err := unlock(cmd)
+	path, f, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	_, f, key, _, err := unlock(cmd)
+	_, f, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func cmdGet(_ context.Context, cmd *cli.Command) error {
 }
 
 func cmdLs(_ context.Context, cmd *cli.Command) error {
-	_, f, key, _, err := unlock(cmd)
+	_, f, key, err := unlock(cmd)
 	if err != nil {
 		return err
 	}

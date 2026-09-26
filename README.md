@@ -8,13 +8,15 @@
 
 # fuu
 
-TPM-sealed secrets for your shell. One file, no server, no key material on disk.
+TPM-sealed secrets for your shell. One passphrase, no server, nothing on disk
+that opens without your chip.
 
 fuu keeps a repository's secrets in one encrypted `.fuu.toml` and loads them
 into your shell as you move between directories. The file is meant to be
 committed and shared in public, like a sops file. Names and values stay sealed
-without the vault key, and that key is sealed to a TPM 2.0 chip, so a copied
-file is useless on any other machine.
+without the vault key. Every vault key derives from your one account, and each
+machine keeps that account sealed to its TPM 2.0 chip, so a copied file is
+useless anywhere else.
 
 ## Install
 
@@ -37,7 +39,7 @@ sudo usermod -aG tss $USER
 ## Quick start
 
 ```bash
-fuu init      # creates .fuu.toml, prints a recovery passphrase once
+fuu init      # creates .fuu.toml, and on first use your account
 fuu set DATABASE_URL postgres://localhost/mydb
 fuu set API_KEY s3cret
 
@@ -57,9 +59,12 @@ Walk out and they are gone again:
 fuu run npm start   # one command, no shell integration at all
 ```
 
-Keep the recovery passphrase somewhere safe. It is the only way to enroll
-another machine or to recover from a cleared TPM, and nobody can recover it
-for you. Commit `.fuu.toml`, the file holds no readable secrets.
+The very first `fuu init` offers to start your account and prints its
+passphrase once. Keep it in your password manager. It is one passphrase for
+every vault you will ever make, the way another machine joins, and the way
+back from a cleared TPM. Nobody can recover it for you. Every later
+`fuu init` asks nothing. Commit `.fuu.toml`, the file holds no readable
+secrets.
 
 ## Shells
 
@@ -81,24 +86,32 @@ command -v fuu >/dev/null 2>&1 && eval "$(fuu hook bash)"
 up to and including the git root, and never walks above it. Point `--vault` or
 `FUU_VAULT` at a file to override.
 
-**Trust.** A vault only loads from a folder this machine has trusted to hold
-that vault key. `fuu init` and `fuu trust` trust the folder they run in.
-Everywhere else the first load is one `fuu trust` that asks for the recovery
-passphrase. There is no trust on first use, so a stranger's repository cannot
-hand you values or reach into yours.
-
-**Devices.** A device is one machine's TPM. Each holds its own unexportable
-key, and the vault key is sealed to every enrolled device plus your recovery
-passphrase. A second machine clones, runs `fuu trust` once, and types the
-passphrase.
+**Account.** One passphrase per person. Each vault's key derives from it
+under that vault's own salt, and each machine keeps it sealed to its own TPM
+in your config dir. A new machine types it once:
 
 ```bash
-fuu device ls          # what is enrolled, this machine marked with *
-fuu device rm <name>   # remove a device and rotate the vault key
+fuu login     # the account passphrase, once per machine
 ```
 
-Removing a device cuts it off from future values, not from what it already
-read. After a real leak, rotate the credentials at their issuers too.
+**Trust.** A vault only loads from a folder this machine has trusted to hold
+it. `fuu init` trusts the folder it runs in, everywhere else it is one
+`fuu trust` and a yes. A vault that does not open under your account cannot
+be trusted at all, so a stranger's repository cannot hand you values, and one
+of your vaults copied into another folder does not load there quietly.
+
+**Rotation.** Pick the one that matches what leaked.
+
+```bash
+fuu rotate               # this vault's values leaked: fresh key, same passphrase
+fuu rotate --passphrase  # passphrase or a machine lost: new passphrase, every vault moves
+```
+
+`--passphrase` prints the new passphrase and reseals every vault trusted on
+this machine. Commit them, then run `fuu login` on your other machines. Login
+moves along any vault that was only checked out there. The lost machine is
+left with a seed that opens nothing new, but rotation is never retroactive:
+rotate the credentials at their issuers too.
 
 ## Editing
 
@@ -132,8 +145,10 @@ the process list and your shell history. fuu says so when that happens.
 
 | command                       | what it does                                                  |
 | ----------------------------- | ------------------------------------------------------------- |
-| `fuu init [--name]`           | create a vault in this repository and enroll this machine     |
-| `fuu trust [--name]`          | trust this vault in this folder and enroll this machine       |
+| `fuu init`                    | create a vault in this repository, the account on first use   |
+| `fuu login`                   | join this machine to your account with the passphrase         |
+| `fuu logout`                  | forget the account on this machine                            |
+| `fuu trust`                   | load this vault in this folder                                |
 | `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted           |
 | `fuu unset KEY`               | delete a secret                                               |
 | `fuu get KEY`                 | print one value                                               |
@@ -142,8 +157,7 @@ the process list and your shell history. fuu says so when that happens.
 | `fuu run <command> [args...]` | run a command with this vault's secrets in its env            |
 | `fuu env`                     | print shell lines loading the vault for the current directory |
 | `fuu hook bash\|zsh\|fish`    | the shell hook                                                |
-| `fuu rotate`                  | replace the vault key and rewrap everything                   |
-| `fuu device ls\|rm`           | manage enrolled devices                                       |
+| `fuu rotate [--passphrase]`   | fresh vault key, or a new passphrase for every vault          |
 
 ## Developing
 

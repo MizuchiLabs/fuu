@@ -12,11 +12,14 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
+// vaultFile is the name fuu looks for and creates.
+const vaultFile = ".fuu.toml"
+
 var (
 	errNoVault    = errors.New("no vault here, run fuu init or point --vault at one")
 	errUntrusted  = errors.New("this folder is not trusted on this machine, run fuu trust")
 	errKeyChanged = errors.New(
-		"the vault key changed since this folder was trusted, run fuu trust and enter the recovery passphrase",
+		"this folder holds another vault than the one it was trusted for, run fuu trust",
 	)
 )
 
@@ -34,7 +37,7 @@ func findVault() (string, error) {
 		return "", fmt.Errorf("vault: %w", err)
 	}
 	for {
-		candidate := filepath.Join(dir, ".fuu.toml")
+		candidate := filepath.Join(dir, vaultFile)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -61,11 +64,11 @@ func repoVaultPath() (string, error) {
 	dir := cwd
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return filepath.Join(dir, ".fuu.toml"), nil
+			return filepath.Join(dir, vaultFile), nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return filepath.Join(cwd, ".fuu.toml"), nil
+			return filepath.Join(cwd, vaultFile), nil
 		}
 		dir = parent
 	}
@@ -92,52 +95,62 @@ func loadTrusted(path string) (*vault.File, string, error) {
 	return f, pin, nil
 }
 
-// The pin turns a vault key swap into a loud refusal instead of a quiet reload.
-func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, error) {
-	key, err := f.Unseal(dk)
+// The pin is the vault id, so a rotation anywhere keeps loading and a vault
+// swapped in from another folder is a loud refusal.
+func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, []byte, error) {
+	account, err := unsealAccount(dk)
 	if err != nil {
-		if errors.Is(err, vault.ErrNotEnrolled) {
-			return nil, fmt.Errorf("%w, run fuu trust", err)
-		}
-		return nil, err
+		return nil, nil, err
 	}
-	if vault.Fingerprint(key) != pin {
-		return nil, errKeyChanged
+	key, id, err := f.Open(account)
+	if errors.Is(err, vault.ErrWrongAccount) {
+		return nil, nil, fmt.Errorf("%w, if the passphrase was rotated elsewhere run fuu login with the new one", err)
 	}
-	return key, nil
+	if err != nil {
+		return nil, nil, err
+	}
+	if id != pin {
+		return nil, nil, errKeyChanged
+	}
+	return key, account, nil
+}
+
+func openPinnedAccount(path string, dk vault.DeviceKey) (*vault.File, []byte, []byte, error) {
+	f, pin, err := loadTrusted(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	key, account, err := unsealPinned(f, dk, pin)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return f, key, account, nil
 }
 
 func openPinned(path string, dk vault.DeviceKey) (*vault.File, []byte, error) {
-	f, pin, err := loadTrusted(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	key, err := unsealPinned(f, dk, pin)
-	if err != nil {
-		return nil, nil, err
-	}
-	return f, key, nil
+	f, key, _, err := openPinnedAccount(path, dk)
+	return f, key, err
 }
 
 // The device key is closed on the way out, unsealing is all it is needed for.
-func unlock(cmd *cli.Command) (string, *vault.File, []byte, string, error) {
+func unlock(cmd *cli.Command) (string, *vault.File, []byte, error) {
 	path, err := vaultPath(cmd)
 	if err != nil {
-		return "", nil, nil, "", err
+		return "", nil, nil, err
 	}
 	f, pin, err := loadTrusted(path)
 	if err != nil {
-		return path, nil, nil, "", err
+		return path, nil, nil, err
 	}
 	dk, err := devkey.Open()
 	if err != nil {
-		return path, nil, nil, "", err
+		return path, nil, nil, err
 	}
 	defer func() { _ = dk.Close() }()
 
-	key, err := unsealPinned(f, dk, pin)
+	key, _, err := unsealPinned(f, dk, pin)
 	if err != nil {
-		return path, nil, nil, "", err
+		return path, nil, nil, err
 	}
-	return path, f, key, vault.Pub(dk.Public()), nil
+	return path, f, key, nil
 }

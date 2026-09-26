@@ -32,7 +32,7 @@ func pinnedVault(t *testing.T) (path string, key []byte, dk *softKey) {
 	t.Helper()
 	isolatePins(t)
 	path = filepath.Join(t.TempDir(), ".fuu.toml")
-	key, dk = writeVault(t, path)
+	key, dk, id := writeVault(t, path)
 
 	f, err := vault.Load(path)
 	if err != nil {
@@ -51,7 +51,7 @@ func pinnedVault(t *testing.T) (path string, key []byte, dk *softKey) {
 	if err != nil {
 		t.Fatalf("vaultDir: %v", err)
 	}
-	if err := savePins(map[string]string{dir: vault.Fingerprint(key)}); err != nil {
+	if err := savePins(map[string]string{dir: id}); err != nil {
 		t.Fatalf("savePins: %v", err)
 	}
 	return path, key, dk
