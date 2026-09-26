@@ -32,9 +32,10 @@ func main() {
 }
 
 // Strips control characters so untrusted text cannot rewrite the terminal.
+// Newlines survive, a hint block is allowed to span lines.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) && r != '\n' {
 			return -1
 		}
 		return r

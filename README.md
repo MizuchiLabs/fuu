@@ -26,6 +26,14 @@ Needs a TPM 2.0. Linux reads `/dev/tpmrm0` and falls back to `/dev/tpm0`,
 Windows goes through TBS. There is no software fallback on purpose, the chip
 is the point.
 
+On Linux those device nodes belong to root and the `tss` group, so a plain
+user has no access at first. Give yourself the group once, then log out and
+back in.
+
+```bash
+sudo usermod -aG tss $USER
+```
+
 ## Quick start
 
 ```bash

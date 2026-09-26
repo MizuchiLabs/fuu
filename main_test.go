@@ -365,6 +365,19 @@ func TestPresent(t *testing.T) {
 			err:  fmt.Errorf("%w %q", vault.ErrNoDevice, "laptop"),
 			want: `no such device "laptop"`,
 		},
+		{
+			name: "two causes and a hint stay in one block",
+			err: fmt.Errorf("open tpm: %w", fmt.Errorf(
+				"%w\n%w\n\nfix it like this",
+				errors.New("this user cannot open the TPM device"),
+				errors.Join(
+					errors.New("open /dev/tpmrm0: permission denied"),
+					errors.New("open /dev/tpm0: permission denied"),
+				),
+			)),
+			want: "this user cannot open the TPM device\nopen /dev/tpmrm0: permission denied\n" +
+				"open /dev/tpm0: permission denied\n\nfix it like this",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -404,6 +417,9 @@ func TestSanitize(t *testing.T) {
 	}
 	if got := sanitize("plain name-1.0"); got != "plain name-1.0" {
 		t.Fatalf("sanitize mangled plain text: %q", got)
+	}
+	if got := sanitize("line one\nline two"); got != "line one\nline two" {
+		t.Fatalf("sanitize dropped newlines: %q", got)
 	}
 }
 
