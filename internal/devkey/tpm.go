@@ -22,6 +22,19 @@ type primaryKey struct {
 	pub  *ecdh.PublicKey
 }
 
+// errNoTPM is the honest signal that this machine has no usable TPM 2.0.
+var errNoTPM = errors.New("no TPM 2.0 found on this machine, fuu has no software fallback")
+
+// noTPMError wraps the cause with the headline and the firmware hint. Two %w
+// keep every cause findable with [errors.Is], and present shows the whole
+// block because a multi wrap error no longer unwraps to one cause.
+func noTPMError(cause error) error {
+	return fmt.Errorf(
+		"%w\n%w\n\nif this machine does have a TPM, look for it in the firmware settings",
+		errNoTPM, cause,
+	)
+}
+
 // Available reports whether a TPM 2.0 device can be opened on this machine.
 func Available() error {
 	dev, err := openTPMDevice()
