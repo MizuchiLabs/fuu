@@ -19,8 +19,12 @@ var errBadVersion = errors.New("unsupported version")
 
 // checkVersion refuses anything this build did not write, what names the file.
 func checkVersion(what string, v int) error {
-	if v != Version {
+	switch {
+	case v == Version:
+		return nil
+	case v > Version:
+		return fmt.Errorf("%s: %w %d, it was written by a newer fuu, upgrade fuu to read it", what, errBadVersion, v)
+	default:
 		return fmt.Errorf("%s: %w %d, this build reads %d", what, errBadVersion, v, Version)
 	}
-	return nil
 }

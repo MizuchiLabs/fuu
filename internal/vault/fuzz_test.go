@@ -58,14 +58,14 @@ func FuzzOpenBody(f *testing.F) {
 }
 
 // The account file sits in the config dir, a malformed one must fail as an error, never a panic.
-func FuzzParseAccount(f *testing.F) {
+func FuzzParseAccounts(f *testing.F) {
 	f.Add([]byte{})
-	f.Add([]byte("version = 1\ndevice = \"p256:x\"\n"))
+	f.Add([]byte("version = 1\ndevice = \"p256:x\"\n[account.default]\nepub = \"x\"\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		a, err := ParseAccount(data)
+		a, err := ParseAccounts(data)
 		if err != nil {
 			if a != nil {
-				t.Fatal("ParseAccount returned an account alongside an error")
+				t.Fatal("ParseAccounts returned accounts alongside an error")
 			}
 			return
 		}

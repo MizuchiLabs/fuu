@@ -59,7 +59,7 @@ func writeVault(t *testing.T, path string) ([]byte, *softKey, string) {
 	t.Helper()
 	dk := newSoftKey(t)
 	account := newTestAccount(t)
-	if err := saveAccount(dk, account); err != nil {
+	if err := saveAccount(dk, vault.DefaultAccount, account); err != nil {
 		t.Fatalf("saveAccount: %v", err)
 	}
 	f, key, id, err := vault.New(account)
@@ -73,6 +73,10 @@ func writeVault(t *testing.T, path string) ([]byte, *softKey, string) {
 }
 
 func pinFolder(t *testing.T, path, id string) string {
+	return pinFolderAs(t, path, pin{Account: vault.DefaultAccount, ID: id})
+}
+
+func pinFolderAs(t *testing.T, path string, p pin) string {
 	t.Helper()
 	dir, err := vaultDir(path)
 	if err != nil {
@@ -82,14 +86,14 @@ func pinFolder(t *testing.T, path, id string) string {
 	if err != nil {
 		t.Fatalf("loadPins: %v", err)
 	}
-	pins[dir] = id
+	pins[dir] = p
 	if err := savePins(pins); err != nil {
 		t.Fatalf("savePins: %v", err)
 	}
 	return dir
 }
 
-func mustPins(t *testing.T) map[string]string {
+func mustPins(t *testing.T) map[string]pin {
 	t.Helper()
 	pins, err := loadPins()
 	if err != nil {
@@ -164,7 +168,7 @@ func TestInitStartsAccount(t *testing.T) {
 
 	feedStdin(t, "y\n")
 	out := captureOutput(t, func() {
-		if err := initVault(pathA, dk); err != nil {
+		if err := initVault(pathA, dk, vault.DefaultAccount); err != nil {
 			t.Fatalf("initVault: %v", err)
 		}
 	})
@@ -177,7 +181,7 @@ func TestInitStartsAccount(t *testing.T) {
 	feedStdin(t, "")
 	pathB := filepath.Join(t.TempDir(), ".fuu.toml")
 	captureOutput(t, func() {
-		if err := initVault(pathB, dk); err != nil {
+		if err := initVault(pathB, dk, vault.DefaultAccount); err != nil {
 			t.Fatalf("initVault of a second vault: %v", err)
 		}
 	})
@@ -190,7 +194,7 @@ func TestInitStartsAccount(t *testing.T) {
 	// A new machine with the same passphrase opens both.
 	isolatePins(t)
 	laptop := newSoftKey(t)
-	if err := login(laptop, strings.ToLower(pass)); err != nil {
+	if err := login(laptop, vault.DefaultAccount, strings.ToLower(pass)); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	for _, path := range []string{pathA, pathB} {
@@ -209,7 +213,7 @@ func TestInitDeclined(t *testing.T) {
 	isolatePins(t)
 	path := filepath.Join(t.TempDir(), ".fuu.toml")
 	feedStdin(t, "n\n")
-	if err := initVault(path, newSoftKey(t)); !errors.Is(err, errNoAccount) {
+	if err := initVault(path, newSoftKey(t), vault.DefaultAccount); !errors.Is(err, errNoAccount) {
 		t.Fatalf("initVault after a no = %v, want errNoAccount", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -219,10 +223,10 @@ func TestInitDeclined(t *testing.T) {
 
 func TestLoginRefusesTypo(t *testing.T) {
 	isolatePins(t)
-	if err := login(newSoftKey(t), "ABCDEFGHIJKLMNOPQRSTUVWXYZ23"); err == nil {
+	if err := login(newSoftKey(t), vault.DefaultAccount, "ABCDEFGHIJKLMNOPQRSTUVWXYZ23"); err == nil {
 		t.Fatal("login accepted a passphrase that fails its check")
 	}
-	if _, err := unsealAccount(newSoftKey(t)); !errors.Is(err, errNoAccount) {
+	if _, err := unsealAccount(newSoftKey(t), vault.DefaultAccount); !errors.Is(err, errNoAccount) {
 		t.Fatalf("a refused login saved an account: %v", err)
 	}
 }
@@ -235,7 +239,7 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	shared := filepath.Join(t.TempDir(), ".fuu.toml")
 	feedStdin(t, "y\n")
 	out := captureOutput(t, func() {
-		if err := initVault(shared, home); err != nil {
+		if err := initVault(shared, home, vault.DefaultAccount); err != nil {
 			t.Fatalf("initVault: %v", err)
 		}
 	})
@@ -246,7 +250,7 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	isolatePins(t)
 	laptopConfig := os.Getenv("XDG_CONFIG_HOME")
 	laptop := newSoftKey(t)
-	if err := login(laptop, oldPass); err != nil {
+	if err := login(laptop, vault.DefaultAccount, oldPass); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	laptopCopy := filepath.Join(t.TempDir(), ".fuu.toml")
@@ -259,7 +263,7 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	}
 	only := filepath.Join(t.TempDir(), ".fuu.toml")
 	captureOutput(t, func() {
-		if err := initVault(only, laptop); err != nil {
+		if err := initVault(only, laptop, vault.DefaultAccount); err != nil {
 			t.Fatalf("initVault on the laptop: %v", err)
 		}
 	})
@@ -267,7 +271,7 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	// Home rotates the passphrase.
 	t.Setenv("XDG_CONFIG_HOME", homeConfig)
 	out = captureOutput(t, func() {
-		if err := rotateAccount(home); err != nil {
+		if err := rotateAccount(home, vault.DefaultAccount); err != nil {
 			t.Fatalf("rotateAccount: %v", err)
 		}
 	})
@@ -285,7 +289,7 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 		t.Fatalf("openPinned before login = %v, want ErrWrongAccount", err)
 	}
 	captureOutput(t, func() {
-		if err := login(laptop, newPass); err != nil {
+		if err := login(laptop, vault.DefaultAccount, newPass); err != nil {
 			t.Fatalf("login with the new passphrase: %v", err)
 		}
 	})
@@ -298,11 +302,78 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	// The old passphrase opens nothing any more.
 	isolatePins(t)
 	stranger := newSoftKey(t)
-	if err := login(stranger, oldPass); err != nil {
+	if err := login(stranger, vault.DefaultAccount, oldPass); err != nil {
 		t.Fatalf("login with the old passphrase: %v", err)
 	}
 	if err := trust(only, stranger); !errors.Is(err, vault.ErrWrongAccount) {
 		t.Fatalf("trust with the old passphrase = %v, want ErrWrongAccount", err)
+	}
+}
+
+// A team account shares its vaults and nothing else: its passphrase opens its
+// vaults, never the ones of your own account, and its rotation leaves yours alone.
+func TestTeamAccount(t *testing.T) {
+	isolatePins(t)
+	me := newSoftKey(t)
+	mine := filepath.Join(t.TempDir(), ".fuu.toml")
+	shared := filepath.Join(t.TempDir(), ".fuu.toml")
+	captureOutput(t, func() {
+		feedStdin(t, "y\n")
+		if err := initVault(mine, me, vault.DefaultAccount); err != nil {
+			t.Fatalf("initVault: %v", err)
+		}
+	})
+	feedStdin(t, "y\n")
+	out := captureOutput(t, func() {
+		if err := initVault(shared, me, "acme"); err != nil {
+			t.Fatalf("initVault --account acme: %v", err)
+		}
+	})
+	teamPass := passphraseFrom(t, out)
+	if pins := mustPins(t); pins[filepath.Dir(shared)].Account != "acme" {
+		t.Fatalf("pins = %v, want the shared folder under acme", pins)
+	}
+	for _, path := range []string{mine, shared} {
+		if _, _, err := openPinned(path, me); err != nil {
+			t.Fatalf("openPinned %s: %v", path, err)
+		}
+	}
+
+	// A teammate gets the team passphrase and nothing else.
+	myConfig := os.Getenv("XDG_CONFIG_HOME")
+	isolatePins(t)
+	mate := newSoftKey(t)
+	captureOutput(t, func() {
+		if err := login(mate, "acme", teamPass); err != nil {
+			t.Fatalf("login --account acme: %v", err)
+		}
+	})
+	feedStdin(t, "y\n")
+	if err := trust(shared, mate); err != nil {
+		t.Fatalf("trust of the team vault: %v", err)
+	}
+	if _, _, err := openPinned(shared, mate); err != nil {
+		t.Fatalf("openPinned of the team vault: %v", err)
+	}
+	if err := trust(mine, mate); !errors.Is(err, vault.ErrWrongAccount) {
+		t.Fatalf("trust of my own vault by a teammate = %v, want ErrWrongAccount", err)
+	}
+
+	// Rotating the team passphrase moves the team vault and leaves mine untouched.
+	t.Setenv("XDG_CONFIG_HOME", myConfig)
+	before := mustRead(t, mine)
+	captureOutput(t, func() {
+		if err := rotateAccount(me, "acme"); err != nil {
+			t.Fatalf("rotateAccount acme: %v", err)
+		}
+	})
+	if !bytes.Equal(mustRead(t, mine), before) {
+		t.Fatal("rotating the team account rewrote a vault of the default account")
+	}
+	for _, path := range []string{mine, shared} {
+		if _, _, err := openPinned(path, me); err != nil {
+			t.Fatalf("openPinned %s after the team rotation: %v", path, err)
+		}
 	}
 }
 
@@ -361,7 +432,7 @@ func TestTrustConfirms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vaultDir: %v", err)
 	}
-	if pins := mustPins(t); pins[dir] != id {
+	if pins := mustPins(t); pins[dir].ID != id {
 		t.Fatalf("pins = %v, want this folder pinned to %s", pins, id)
 	}
 }
@@ -374,7 +445,7 @@ func TestTrustRefusesStranger(t *testing.T) {
 	before := mustRead(t, path)
 
 	me := newSoftKey(t)
-	if err := saveAccount(me, newTestAccount(t)); err != nil {
+	if err := saveAccount(me, vault.DefaultAccount, newTestAccount(t)); err != nil {
 		t.Fatalf("saveAccount: %v", err)
 	}
 	feedStdin(t, "y\n")
@@ -444,7 +515,7 @@ func TestTrustSameVaultSecondFolder(t *testing.T) {
 	if !strings.Contains(question, dirA) {
 		t.Fatalf("trust asked %q, want it to name %s", question, dirA)
 	}
-	if pins := mustPins(t); pins[dirB] != id {
+	if pins := mustPins(t); pins[dirB].ID != id {
 		t.Fatalf("pins = %v, want %s pinned to %s", pins, dirB, id)
 	}
 }

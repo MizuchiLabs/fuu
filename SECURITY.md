@@ -17,16 +17,17 @@ surface, what fuu handles, and what it accepts on purpose.
 - **Vault file.** `.fuu.toml`, one per repository, meant for public git. It
   holds a salt, a sealed vault id and the sealed values. Nothing about your
   machines.
-- **Account passphrase.** One per person, for every vault. fuu always
+- **Account passphrase.** One for your own account, which covers every vault
+  you make, and one per group account you share with others. fuu always
   generates it, 128 random bits from `crypto/rand` plus two check characters,
   and prints it once. Through argon2id it becomes the account seed.
 - **Account seed.** 32 bytes every vault key derives from. It never touches
   disk in the clear.
-- **Device key.** An ECDH key inside the TPM. Each machine keeps the account
-  seed sealed to it in `account.toml` in your config dir, and that blob opens
-  on no other chip.
+- **Device key.** An ECDH key inside the TPM. Each machine keeps its account
+  seeds sealed to it in `account.toml` in your config dir, and none of them
+  opens on another chip.
 - **Local pins.** One small file in your config dir, mapping each folder to
-  the id of the vault it is trusted to hold. It lives outside the vault on
+  the account that opens it and the id of the vault it is trusted to hold. It lives outside the vault on
   purpose, a trust anchor read from the file it verifies proves nothing.
 - **The hook.** `fuu env` output eval'd by your shell at every prompt.
 
@@ -42,7 +43,8 @@ One 32 byte account seed does everything.
   turn a typo into an error at `fuu login` rather than vaults that will not
   open. The cost parameters are constants of the program, so no file can ask
   for cheaper work or for exhausting work.
-- **Per machine.** ECIES over P-256 seals the seed to the device key. A fresh
+- **Per machine.** ECIES over P-256 seals each seed to the device key, with
+  the account's name bound in so a seal cannot be moved to another name. A fresh
   ephemeral key per wrap, HKDF-SHA256 over the shared secret with both public
   points bound into the salt and a purpose label as info, then
   XChaCha20-Poly1305. Only that chip opens it.
@@ -72,10 +74,14 @@ owner seed, a fixed salt and a fixed template. Nothing about it is written to
 disk, reopening the chip reproduces the same key, and the private half never
 exists outside the silicon.
 
-**One passphrase is one blast radius.** Whoever holds the passphrase opens
-every vault you own, including every version in git history, because every
-vault key derives from it. That is the price of not keeping twenty of them,
-and it is why fuu generates it rather than letting you pick one.
+**One passphrase is one blast radius.** Whoever holds an account's passphrase
+opens every vault of that account, including every version in git history,
+because every vault key derives from it. That is the price of not keeping
+twenty of them, and it is why fuu generates it rather than letting you pick
+one. It is also why sharing goes through a group account: a group account
+reaches only its own vaults, and everyone holding its passphrase is trusted
+equally. There is no removing one person short of rotating it for everyone.
+The vault file does not say which account it belongs to.
 
 ## Attack surface
 

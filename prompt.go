@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
 // Anything but a plain yes means no.
@@ -46,7 +48,7 @@ func readSecret(label string) (string, error) {
 
 // Goes to stdout so saving it is a redirect rather than a hunt through the
 // scrollback. Grouped in fours for reading, login ignores the dashes.
-func showPassphrase(pass string) {
+func showPassphrase(account, pass string) {
 	groups := make([]string, 0, len(pass)/4+1)
 	for len(pass) > 4 {
 		groups = append(groups, pass[:4])
@@ -54,7 +56,11 @@ func showPassphrase(pass string) {
 	}
 	groups = append(groups, pass)
 
-	fmt.Println("your account passphrase, one for every vault:")
+	if account == vault.DefaultAccount {
+		fmt.Println("your account passphrase, one for every vault:")
+	} else {
+		fmt.Printf("the passphrase of account %s, share it only with who should open its vaults:\n", account)
+	}
 	fmt.Println()
 	fmt.Printf("    %s\n", strings.Join(groups, "-"))
 	fmt.Println()

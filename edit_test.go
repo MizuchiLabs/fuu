@@ -51,7 +51,7 @@ func pinnedVault(t *testing.T) (path string, key []byte, dk *softKey) {
 	if err != nil {
 		t.Fatalf("vaultDir: %v", err)
 	}
-	if err := savePins(map[string]string{dir: id}); err != nil {
+	if err := savePins(map[string]pin{dir: {Account: vault.DefaultAccount, ID: id}}); err != nil {
 		t.Fatalf("savePins: %v", err)
 	}
 	return path, key, dk

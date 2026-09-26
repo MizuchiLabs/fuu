@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/urfave/cli/v3"
+
+	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
 var (
@@ -24,21 +26,28 @@ var (
 	}
 )
 
+func accountFlag(usage string) *cli.StringFlag {
+	return &cli.StringFlag{Name: "account", Usage: usage, Value: vault.DefaultAccount}
+}
+
 var commands = []*cli.Command{
 	{
 		Name:   "init",
 		Usage:  "create a vault in this repository, and the account on first use",
 		Action: cmdInit,
+		Flags:  []cli.Flag{accountFlag("the account the vault belongs to")},
 	},
 	{
 		Name:   "login",
-		Usage:  "unlock your account on this machine with the account passphrase",
+		Usage:  "unlock an account on this machine with its passphrase",
 		Action: cmdLogin,
+		Flags:  []cli.Flag{accountFlag("the account to log in to")},
 	},
 	{
 		Name:   "logout",
-		Usage:  "forget the account on this machine",
+		Usage:  "forget every account on this machine, or one with --account",
 		Action: cmdLogout,
+		Flags:  []cli.Flag{&cli.StringFlag{Name: "account", Usage: "forget only this account"}},
 	},
 	{
 		Name:   "trust",
@@ -95,9 +104,12 @@ var commands = []*cli.Command{
 		Name:   "rotate",
 		Usage:  "reseal this vault under a fresh key, or with --passphrase every vault under a new account passphrase",
 		Action: cmdRotate,
-		Flags: []cli.Flag{&cli.BoolFlag{
-			Name:  "passphrase",
-			Usage: "replace the account passphrase and move every trusted vault on this machine to it",
-		}},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "passphrase",
+				Usage: "replace the account passphrase and move every vault trusted under it on this machine",
+			},
+			accountFlag("the account whose passphrase --passphrase replaces"),
+		},
 	},
 }

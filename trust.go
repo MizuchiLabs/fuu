@@ -34,7 +34,7 @@ func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	return trust(path, dk)
 }
 
-// Only a vault sealed to this machine's account can be trusted, so a
+// Only a vault sealed to one of this machine's accounts can be trusted, so a
 // stranger's repository never loads. What is left to confirm is that this
 // folder, which may hold a copy of any of your vaults, should load it.
 func trust(path string, dk vault.DeviceKey) error {
@@ -50,18 +50,12 @@ func trust(path string, dk vault.DeviceKey) error {
 	if err != nil {
 		return err
 	}
-	account, err := unsealAccount(dk)
+	name, key, id, err := openAny(f, dk)
 	if err != nil {
 		return err
 	}
-	key, id, err := f.Open(account)
-	if errors.Is(err, vault.ErrWrongAccount) {
-		return fmt.Errorf("%w, if the passphrase was rotated elsewhere run fuu login with the new one", err)
-	}
-	if err != nil {
-		return err
-	}
-	if pins[dir] == id {
+	p := pin{Account: name, ID: id}
+	if pins[dir] == p {
 		fmt.Println("already trusted")
 		return nil
 	}
@@ -75,11 +69,14 @@ func trust(path string, dk vault.DeviceKey) error {
 	}
 
 	question := "load this vault into your shell in " + sanitize(dir)
-	if other, ok := pinnedElsewhere(pins, dir, id); ok {
+	if other, ok := pinnedElsewhere(pins, dir, p); ok {
 		question = fmt.Sprintf("this is the same vault as %s, load it in %s too", sanitize(other), sanitize(dir))
 	}
-	if pins[dir] != "" {
+	if pins[dir].ID != "" {
 		question = fmt.Sprintf("%s holds another vault than it was trusted for, load the new one", sanitize(dir))
+	}
+	if name != vault.DefaultAccount {
+		question += ", from account " + name
 	}
 	ok, err := confirm(question)
 	if err != nil {
@@ -88,12 +85,37 @@ func trust(path string, dk vault.DeviceKey) error {
 	if !ok {
 		return errors.New("aborted, nothing recorded")
 	}
-	pins[dir] = id
+	pins[dir] = p
 	if err := savePins(pins); err != nil {
 		return err
 	}
 	fmt.Printf("trusted %s\n", sanitize(dir))
 	return nil
+}
+
+// openAny tries every account on this machine, the default one first, and
+// names the one the vault belongs to.
+func openAny(f *vault.File, dk vault.DeviceKey) (string, []byte, string, error) {
+	accounts, err := readAccounts()
+	if err != nil {
+		return "", nil, "", err
+	}
+	if accounts == nil {
+		return "", nil, "", noAccount(vault.DefaultAccount)
+	}
+	for _, name := range accounts.Names() {
+		seed, _, err := accounts.Unseal(dk, name)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if key, id, err := f.Open(seed); err == nil {
+			return name, key, id, nil
+		}
+	}
+	return "", nil, "", fmt.Errorf(
+		"%w, if it was shared with you run fuu login --account <name> with its passphrase",
+		vault.ErrWrongAccount,
+	)
 }
 
 // Lives outside the vault on purpose: a trust anchor read from the file it
@@ -106,19 +128,25 @@ func trustedPath() (string, error) {
 	return filepath.Join(dir, "fuu", "trusted.toml"), nil
 }
 
-func loadPins() (map[string]string, error) {
+// pin is what a folder is trusted to hold: the account that opens it and the vault's id.
+type pin struct {
+	Account string `toml:"account"`
+	ID      string `toml:"id"`
+}
+
+func loadPins() (map[string]pin, error) {
 	path, err := trustedPath()
 	if err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]string{}, nil
+		return map[string]pin{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("trust: read %s: %w", path, err)
 	}
-	pins := map[string]string{}
+	pins := map[string]pin{}
 	if err := toml.Unmarshal(data, &pins); err != nil {
 		return nil, fmt.Errorf("trust: parse %s: %w", path, err)
 	}
@@ -126,7 +154,7 @@ func loadPins() (map[string]string, error) {
 }
 
 // Sorted so an unchanged write stays byte identical and WriteIfChanged leaves it alone.
-func savePins(pins map[string]string) error {
+func savePins(pins map[string]pin) error {
 	path, err := trustedPath()
 	if err != nil {
 		return err
@@ -142,9 +170,9 @@ func savePins(pins map[string]string) error {
 	return nil
 }
 
-func pinnedElsewhere(pins map[string]string, dir, fp string) (string, bool) {
+func pinnedElsewhere(pins map[string]pin, dir string, p pin) (string, bool) {
 	for _, other := range slices.Sorted(maps.Keys(pins)) {
-		if other != dir && pins[other] == fp {
+		if other != dir && pins[other] == p {
 			return other, true
 		}
 	}

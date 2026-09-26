@@ -94,6 +94,19 @@ in your config dir. A new machine types it once:
 fuu login     # the account passphrase, once per machine
 ```
 
+**Sharing.** Your own account opens every vault you make, so never hand out
+its passphrase. Give a group its own account instead. Its vaults open for
+whoever has its passphrase, and nothing else of yours does.
+
+```bash
+fuu init --account acme    # starts acme on first use and prints its passphrase
+fuu login --account acme   # a teammate joins with that passphrase
+```
+
+`fuu trust` finds the right account by itself. Rotating one account never
+touches the vaults of another, and `fuu logout --account acme` leaves the
+group.
+
 **Trust.** A vault only loads from a folder this machine has trusted to hold
 it. `fuu init` trusts the folder it runs in, everywhere else it is one
 `fuu trust` and a yes. A vault that does not open under your account cannot
@@ -107,9 +120,10 @@ fuu rotate               # this vault's values leaked: fresh key, same passphras
 fuu rotate --passphrase  # passphrase or a machine lost: new passphrase, every vault moves
 ```
 
-`--passphrase` prints the new passphrase and reseals every vault trusted on
-this machine. Commit them, then run `fuu login` on your other machines. Login
-moves along any vault that was only checked out there. The lost machine is
+`--passphrase` prints the new passphrase and reseals every vault of that
+account trusted on this machine, add `--account acme` for a group. Commit
+them, then on your other machines pull first and run `fuu login` after.
+Login moves along any vault that was only checked out there. The lost machine is
 left with a seed that opens nothing new, but rotation is never retroactive:
 rotate the credentials at their issuers too.
 
@@ -145,9 +159,9 @@ the process list and your shell history. fuu says so when that happens.
 
 | command                       | what it does                                                  |
 | ----------------------------- | ------------------------------------------------------------- |
-| `fuu init`                    | create a vault in this repository, the account on first use   |
-| `fuu login`                   | join this machine to your account with the passphrase         |
-| `fuu logout`                  | forget the account on this machine                            |
+| `fuu init [--account]`        | create a vault in this repository, the account on first use   |
+| `fuu login [--account]`       | join this machine to an account with its passphrase           |
+| `fuu logout [--account]`      | forget every account on this machine, or one                  |
 | `fuu trust`                   | load this vault in this folder                                |
 | `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted           |
 | `fuu unset KEY`               | delete a secret                                               |
@@ -157,7 +171,7 @@ the process list and your shell history. fuu says so when that happens.
 | `fuu run <command> [args...]` | run a command with this vault's secrets in its env            |
 | `fuu env`                     | print shell lines loading the vault for the current directory |
 | `fuu hook bash\|zsh\|fish`    | the shell hook                                                |
-| `fuu rotate [--passphrase]`   | fresh vault key, or a new passphrase for every vault          |
+| `fuu rotate [--passphrase]`   | fresh vault key, or a new passphrase for an account's vaults  |
 
 ## Developing
 

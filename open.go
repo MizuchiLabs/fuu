@@ -75,41 +75,44 @@ func repoVaultPath() (string, error) {
 }
 
 // Touches no key material and no TPM, so a folder nobody vouched for never reaches the chip.
-func loadTrusted(path string) (*vault.File, string, error) {
+func loadTrusted(path string) (*vault.File, pin, error) {
 	f, err := vault.Load(path)
 	if err != nil {
-		return nil, "", err
+		return nil, pin{}, err
 	}
 	dir, err := vaultDir(path)
 	if err != nil {
-		return nil, "", err
+		return nil, pin{}, err
 	}
 	pins, err := loadPins()
 	if err != nil {
-		return nil, "", err
+		return nil, pin{}, err
 	}
-	pin := pins[dir]
-	if pin == "" {
-		return nil, "", errUntrusted
+	p := pins[dir]
+	if p.ID == "" {
+		return nil, pin{}, errUntrusted
 	}
-	return f, pin, nil
+	return f, p, nil
 }
 
 // The pin is the vault id, so a rotation anywhere keeps loading and a vault
 // swapped in from another folder is a loud refusal.
-func unsealPinned(f *vault.File, dk vault.DeviceKey, pin string) ([]byte, []byte, error) {
-	account, err := unsealAccount(dk)
+func unsealPinned(f *vault.File, dk vault.DeviceKey, p pin) ([]byte, []byte, error) {
+	account, err := unsealAccount(dk, p.Account)
 	if err != nil {
 		return nil, nil, err
 	}
 	key, id, err := f.Open(account)
 	if errors.Is(err, vault.ErrWrongAccount) {
-		return nil, nil, fmt.Errorf("%w, if the passphrase was rotated elsewhere run fuu login with the new one", err)
+		return nil, nil, fmt.Errorf(
+			"%w, if the passphrase was rotated elsewhere run fuu login%s with the new one",
+			err, accountArg(p.Account),
+		)
 	}
 	if err != nil {
 		return nil, nil, err
 	}
-	if id != pin {
+	if id != p.ID {
 		return nil, nil, errKeyChanged
 	}
 	return key, account, nil

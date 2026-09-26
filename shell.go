@@ -164,12 +164,15 @@ func vaultState(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	buf := make([]byte, 0, len(dir)+len(data)+len(pins[dir])+2)
+	p := pins[dir]
+	buf := make([]byte, 0, len(dir)+len(data)+len(p.Account)+len(p.ID)+3)
 	buf = append(buf, dir...)
 	buf = append(buf, 0)
 	buf = append(buf, data...)
 	buf = append(buf, 0)
-	buf = append(buf, pins[dir]...)
+	buf = append(buf, p.Account...)
+	buf = append(buf, 0)
+	buf = append(buf, p.ID...)
 	sum := sha256.Sum256(buf)
 	return hex.EncodeToString(sum[:]), nil
 }
