@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/mizuchilabs/kata/fsutil"
 	"github.com/urfave/cli/v3"
+
+	"github.com/mizuchilabs/kata/fsutil"
 
 	"github.com/mizuchilabs/fuu/internal/devkey"
 	"github.com/mizuchilabs/fuu/internal/vault"
