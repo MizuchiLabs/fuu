@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -253,13 +252,14 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	//nolint:gosec // G204 is the whole purpose of run, it executes the caller's own command.
-	child := exec.CommandContext(ctx, args[0], args[1:]...)
-	child.Stdin = os.Stdin
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
-	child.Env = append(os.Environ(), envPairs(values)...)
-	return child.Run()
+	// A name the vault holds replaces the inherited one, a duplicate would leave
+	// it to the child which of the two it reads.
+	env := slices.DeleteFunc(os.Environ(), func(pair string) bool {
+		name, _, _ := strings.Cut(pair, "=")
+		_, held := values[name]
+		return held
+	})
+	return runChild(ctx, args, append(env, envPairs(values)...))
 }
 
 func envPairs(values map[string]string) []string {
