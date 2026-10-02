@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"strings"
 	"unicode"
 
@@ -44,6 +46,12 @@ func sanitize(s string) string {
 
 // Keeps the deepest message and appended hint lines, drops the context prefixes.
 func present(err error) string {
+	// These name the file or the command in their own text, the bare cause
+	// under them says too little.
+	switch err.(type) { //nolint:errorlint // only this level counts, the walk below reaches the rest
+	case *fs.PathError, *os.LinkError, *exec.Error:
+		return err.Error()
+	}
 	inner := errors.Unwrap(err)
 	if inner == nil {
 		return err.Error()

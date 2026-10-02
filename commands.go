@@ -102,9 +102,10 @@ var commands = []*cli.Command{
 		Action: cmdEnv,
 	},
 	{
-		Name:   "hook",
-		Usage:  "print the shell hook that keeps your shell's secrets up to date",
-		Action: cmdHook,
+		Name:      "hook",
+		Usage:     "print the shell hook that keeps your shell's secrets up to date",
+		ArgsUsage: "bash|zsh|fish",
+		Action:    cmdHook,
 	},
 	{
 		Name:   "rotate",

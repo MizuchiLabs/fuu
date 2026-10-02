@@ -17,14 +17,18 @@ const domain = "fuu/v1/"
 
 var errBadVersion = errors.New("unsupported version")
 
-// checkVersion refuses anything this build did not write, what names the file.
+// checkVersion refuses anything this build did not write, what names the
+// file. It comes after the cause so it survives the trimming of prefixes.
 func checkVersion(what string, v int) error {
 	switch {
 	case v == Version:
 		return nil
 	case v > Version:
-		return fmt.Errorf("%s: %w %d, it was written by a newer fuu, upgrade fuu to read it", what, errBadVersion, v)
+		return fmt.Errorf(
+			"%w %d in the %s, it was written by a newer fuu, upgrade fuu to read it",
+			errBadVersion, v, what,
+		)
 	default:
-		return fmt.Errorf("%s: %w %d, this build reads %d", what, errBadVersion, v, Version)
+		return fmt.Errorf("%w %d in the %s, this build reads %d", errBadVersion, v, what, Version)
 	}
 }

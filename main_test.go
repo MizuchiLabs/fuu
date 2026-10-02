@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -681,6 +683,23 @@ func TestUntrust(t *testing.T) {
 	}
 }
 
+// Arguments that cannot mean what was typed are refused before the vault or the chip is touched.
+func TestRefusesArguments(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"set", "KEY", "hello", "world"}, "quote a value"},
+		{[]string{"rotate", "--account", "acme"}, "--passphrase"},
+	} {
+		root := &cli.Command{Name: "fuu", Flags: []cli.Flag{vaultFlag}, Commands: commands}
+		err := root.Run(t.Context(), append([]string{"fuu"}, tc.args...))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("fuu %s = %v, want a refusal naming %q", strings.Join(tc.args, " "), err, tc.want)
+		}
+	}
+}
+
 // Moved names are said out loud, a held state says nothing, and the exact wording is not the contract.
 func TestAnnounce(t *testing.T) {
 	for _, tc := range []struct {
@@ -739,6 +758,18 @@ func TestPresent(t *testing.T) {
 			name: "suffix after the sentinel stays",
 			err:  fmt.Errorf("%w %q", vault.ErrNoKey, "API_KEY"),
 			want: `no such key "API_KEY"`,
+		},
+		{
+			name: "a file error keeps its path",
+			err: fmt.Errorf("vault: read: %w", &fs.PathError{
+				Op: "open", Path: "/p/.fuu.toml", Err: fs.ErrNotExist,
+			}),
+			want: "open /p/.fuu.toml: file does not exist",
+		},
+		{
+			name: "a missing command keeps its name",
+			err:  fmt.Errorf("run: %w", &exec.Error{Name: "nope", Err: exec.ErrNotFound}),
+			want: `exec: "nope": ` + exec.ErrNotFound.Error(),
 		},
 		{
 			name: "two causes and a hint stay in one block",

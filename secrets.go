@@ -24,6 +24,8 @@ func cmdSet(ctx context.Context, cmd *cli.Command) error {
 
 	var value string
 	switch {
+	case cmd.Args().Len() > 2:
+		return errors.New("set: want <KEY> [value], quote a value that has spaces")
 	case cmd.Args().Len() > 1:
 		value = cmd.Args().Get(1)
 		fmt.Fprintln(

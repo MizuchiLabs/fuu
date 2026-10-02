@@ -225,6 +225,9 @@ func cmdLogout(_ context.Context, cmd *cli.Command) error {
 }
 
 func cmdRotate(_ context.Context, cmd *cli.Command) error {
+	if cmd.IsSet("account") && !cmd.Bool("passphrase") {
+		return errors.New("rotate: --account only goes with --passphrase")
+	}
 	dk, err := devkey.Open()
 	if err != nil {
 		return err
