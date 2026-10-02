@@ -62,7 +62,7 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 	// An empty buffer is more likely a botched edit, so dropping every key
 	// takes a confirmation.
 	if len(edited) == 0 && len(known) > 0 && len(off) == 0 {
-		ok, err := confirm("drop every key in this vault")
+		ok, err := confirm(ctx, "drop every key in this vault")
 		if err != nil {
 			return err
 		}

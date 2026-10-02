@@ -20,7 +20,7 @@ import (
 )
 
 // The only command that pins a folder, everywhere else there is no trust on first use.
-func cmdTrust(_ context.Context, cmd *cli.Command) error {
+func cmdTrust(ctx context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if err != nil {
 		return err
@@ -32,13 +32,13 @@ func cmdTrust(_ context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = dk.Close() }()
 
-	return trust(path, dk)
+	return trust(ctx, path, dk)
 }
 
 // Only a vault sealed to one of this machine's accounts can be trusted, so a
 // stranger's repository never loads. What is left to confirm is that this
 // folder, which may hold a copy of any of your vaults, should load it.
-func trust(path string, dk vault.DeviceKey) error {
+func trust(ctx context.Context, path string, dk vault.DeviceKey) error {
 	f, err := vault.Load(path)
 	if err != nil {
 		return err
@@ -79,7 +79,7 @@ func trust(path string, dk vault.DeviceKey) error {
 	if name != vault.DefaultAccount {
 		question += ", from account " + name
 	}
-	ok, err := confirm(question)
+	ok, err := confirm(ctx, question)
 	if err != nil {
 		return err
 	}

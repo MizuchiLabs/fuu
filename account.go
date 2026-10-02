@@ -37,7 +37,7 @@ func accountArg(name string) string {
 	return " --account " + name
 }
 
-func cmdInit(_ context.Context, cmd *cli.Command) error {
+func cmdInit(ctx context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
 	if errors.Is(err, errNoVault) {
 		path, err = repoVaultPath()
@@ -50,12 +50,12 @@ func cmdInit(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 	defer func() { _ = dk.Close() }()
-	return initVault(path, dk, cmd.String("account"))
+	return initVault(ctx, path, dk, cmd.String("account"))
 }
 
 // The first vault of an account this machine lacks offers to start it, every
 // later vault needs nothing but the chip.
-func initVault(path string, dk vault.DeviceKey, name string) error {
+func initVault(ctx context.Context, path string, dk vault.DeviceKey, name string) error {
 	if !vault.ValidAccountName(name) {
 		return fmt.Errorf("%w %q", vault.ErrBadAccountName, name)
 	}
@@ -64,7 +64,7 @@ func initVault(path string, dk vault.DeviceKey, name string) error {
 	}
 	account, err := unsealAccount(dk, name)
 	if errors.Is(err, errNoAccount) {
-		account, err = newAccount(dk, name)
+		account, err = newAccount(ctx, dk, name)
 	}
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ func initVault(path string, dk vault.DeviceKey, name string) error {
 
 // Starting an account that may already exist elsewhere splits vaults between
 // two passphrases, so it takes a yes.
-func newAccount(dk vault.DeviceKey, name string) ([]byte, error) {
+func newAccount(ctx context.Context, dk vault.DeviceKey, name string) ([]byte, error) {
 	question := "no account on this machine yet, start a new one (say no and run fuu login if you have one)"
 	if name != vault.DefaultAccount {
 		question = fmt.Sprintf(
@@ -107,7 +107,7 @@ func newAccount(dk vault.DeviceKey, name string) ([]byte, error) {
 			name, name,
 		)
 	}
-	ok, err := confirm(question)
+	ok, err := confirm(ctx, question)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func newAccount(dk vault.DeviceKey, name string) ([]byte, error) {
 	return account, nil
 }
 
-func cmdLogin(_ context.Context, cmd *cli.Command) error {
+func cmdLogin(ctx context.Context, cmd *cli.Command) error {
 	name := cmd.String("account")
 	if !vault.ValidAccountName(name) {
 		return fmt.Errorf("%w %q", vault.ErrBadAccountName, name)
@@ -134,16 +134,16 @@ func cmdLogin(_ context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = dk.Close() }()
 
-	pass, err := readSecret("passphrase of account " + name)
+	pass, err := readSecret(ctx, "passphrase of account "+name)
 	if err != nil {
 		return err
 	}
-	return login(dk, name, pass)
+	return login(ctx, dk, name, pass)
 }
 
 // Vaults still sealed to the seed this machine held before move along, so a
 // rotation made elsewhere strands nothing that was only checked out here.
-func login(dk vault.DeviceKey, name, pass string) error {
+func login(ctx context.Context, dk vault.DeviceKey, name, pass string) error {
 	if !vault.CheckPassphrase(pass) {
 		return errors.New("that is not an account passphrase, check it for a typo")
 	}

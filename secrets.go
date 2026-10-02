@@ -16,7 +16,7 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
-func cmdSet(_ context.Context, cmd *cli.Command) error {
+func cmdSet(ctx context.Context, cmd *cli.Command) error {
 	name, err := secretName(cmd, "set: want <KEY> [value]")
 	if err != nil {
 		return err
@@ -32,13 +32,16 @@ func cmdSet(_ context.Context, cmd *cli.Command) error {
 		)
 	case !term.IsTerminal(int(os.Stdin.Fd())):
 		// A piped value keeps newlines and leading dashes, which argv cannot do.
-		all, err := io.ReadAll(stdin)
+		all, err := awaitInput(ctx, func() (string, error) {
+			b, err := io.ReadAll(stdin)
+			return string(b), err
+		})
 		if err != nil {
 			return fmt.Errorf("set: %w", err)
 		}
-		value = strings.TrimSuffix(strings.TrimSuffix(string(all), "\n"), "\r")
+		value = strings.TrimSuffix(strings.TrimSuffix(all, "\n"), "\r")
 	default:
-		if value, err = readSecret("value"); err != nil {
+		if value, err = readSecret(ctx, "value"); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,38 +13,77 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
+var errInterrupted = errors.New("interrupted")
+
 // Anything but a plain yes means no.
-func confirm(label string) (bool, error) {
+func confirm(ctx context.Context, label string) (bool, error) {
 	fmt.Fprintf(os.Stderr, "%s [y/N]: ", label)
 	defer fmt.Fprintln(os.Stderr)
 
-	line, err := stdin.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, fmt.Errorf("prompt: %w", err)
+	line, err := awaitInput(ctx, readLine)
+	if err != nil {
+		return false, err
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes", nil
 }
 
 // Takes a plain line when stdin is a pipe, so init and set stay scriptable.
-func readSecret(label string) (string, error) {
+func readSecret(ctx context.Context, label string) (string, error) {
 	fmt.Fprintf(os.Stderr, "%s: ", label)
 	defer fmt.Fprintln(os.Stderr)
 
 	fd := int(os.Stdin.Fd())
-	if term.IsTerminal(fd) {
-		line, err := term.ReadPassword(fd)
-		if err != nil {
-			return "", fmt.Errorf("prompt: %w", err)
-		}
-		return string(line), nil
+	if !term.IsTerminal(fd) {
+		line, err := awaitInput(ctx, readLine)
+		return strings.TrimRight(line, "\r\n"), err
 	}
 
+	// ReadPassword turns echo off, an interrupted prompt has to turn it back on.
+	state, err := term.GetState(fd)
+	if err != nil {
+		return "", fmt.Errorf("prompt: %w", err)
+	}
+	line, err := awaitInput(ctx, func() (string, error) {
+		b, err := term.ReadPassword(fd)
+		return string(b), err
+	})
+	if errors.Is(err, errInterrupted) {
+		_ = term.Restore(fd, state)
+		return "", err
+	}
+	if err != nil {
+		return "", fmt.Errorf("prompt: %w", err)
+	}
+	return line, nil
+}
+
+func readLine() (string, error) {
 	line, err := stdin.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("prompt: %w", err)
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return line, nil
+}
+
+// Reads in the background so the first ctrl-c ends the prompt. The signal
+// only cancels ctx, a blocked read would sit there until the second one.
+func awaitInput(ctx context.Context, read func() (string, error)) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		text, err := read()
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case <-ctx.Done():
+		return "", errInterrupted
+	}
 }
 
 // Goes to stdout so saving it is a redirect rather than a hunt through the
