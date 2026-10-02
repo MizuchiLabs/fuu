@@ -27,7 +27,10 @@ const (
 	idSize   = 16
 
 	// maxFileBytes caps the untrusted file before any hashing or parsing.
-	maxFileBytes = 5 << 20 // 5MB
+	maxFileBytes = 5 << 20 // 5 MiB
+
+	// FileMode is world readable, the file is meant to be public and git checks it out that way.
+	FileMode = 0o644
 )
 
 var (
@@ -137,7 +140,7 @@ func (f *File) Save(path string) error {
 	if !bytes.Equal(current, f.raw) {
 		return ErrConflict
 	}
-	if err := fsutil.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+	if err := fsutil.WriteFile(path, buf.Bytes(), FileMode); err != nil {
 		return fmt.Errorf("vault: write %s: %w", path, err)
 	}
 	f.raw = buf.Bytes()

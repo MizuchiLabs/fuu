@@ -379,7 +379,7 @@ func replaceIfUnchanged(path string, was, data []byte) error {
 	if !bytes.Equal(current, was) {
 		return vault.ErrConflict
 	}
-	if err := fsutil.WriteFile(path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(path, data, vault.FileMode); err != nil {
 		return fmt.Errorf("vault: write %s: %w", path, err)
 	}
 	return nil
