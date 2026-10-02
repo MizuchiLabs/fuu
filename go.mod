@@ -12,3 +12,6 @@ require (
 )
 
 require golang.org/x/sys v0.48.0 // indirect
+
+// Written before the vault key was split, their vaults no longer open.
+retract [v0.1.0, v0.2.1]
