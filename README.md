@@ -55,9 +55,15 @@ Walk out and they are gone again:
 
     fuu: unloading -DATABASE_URL -API_KEY
 
+A variable you had exported yourself under one of those names comes back as
+it was.
+
 ```bash
 fuu run npm start   # one command, no shell integration at all
 ```
+
+`fuu run` hands the process over to the command, so its exit code and its
+signals are the command's own.
 
 The very first `fuu init` offers to start your account and prints its
 passphrase once. Keep it in your password manager. It is one passphrase for
@@ -111,7 +117,9 @@ group.
 it. `fuu init` trusts the folder it runs in, everywhere else it is one
 `fuu trust` and a yes. A vault that does not open under your account cannot
 be trusted at all, so a stranger's repository cannot hand you values, and one
-of your vaults copied into another folder does not load there quietly.
+of your vaults copied into another folder does not load there quietly. The
+file in a folder you never trusted is not even opened. `fuu untrust` takes a
+folder back out, name the folder if its checkout is already gone.
 
 **Rotation.** Pick the one that matches what leaked.
 
@@ -123,7 +131,9 @@ fuu rotate --passphrase  # passphrase or a machine lost: new passphrase, every v
 `--passphrase` prints the new passphrase and reseals every vault of that
 account trusted on this machine, add `--account acme` for a group. Commit
 them, then on your other machines pull first and run `fuu login` after.
-Login moves along any vault that was only checked out there. The lost machine is
+Login moves along any vault that was only checked out there, and asks before
+it does. Say no if the question shows up when you did not rotate, the
+passphrase you typed belongs to another account then. The lost machine is
 left with a seed that opens nothing new, but rotation is never retroactive:
 rotate the credentials at their issuers too.
 
@@ -143,8 +153,9 @@ Change a line to change a value, add one to add a key, delete one to drop it.
 Comment a line out to disable a key instead. It stays sealed but never loads
 into a shell. Keys you leave alone keep their entries, so a git diff shows
 exactly which line changed. Nothing is written if the TOML is invalid or a
-name is not a valid shell variable name. Names that would configure the shell
-itself, `PATH`, `PROMPT_COMMAND` and about fifty others, are refused outright.
+name is not a valid shell variable name, and fuu offers to open the buffer
+again so a typo does not cost the edit. Names that would configure the shell
+itself, `PATH`, `PROMPT_COMMAND` and about eighty others, are refused outright.
 
 Store a value from stdin when it is long or starts with a dash:
 
@@ -163,6 +174,7 @@ the process list and your shell history. fuu says so when that happens.
 | `fuu login [--account]`       | join this machine to an account with its passphrase           |
 | `fuu logout [--account]`      | forget every account on this machine, or one                  |
 | `fuu trust`                   | load this vault in this folder                                |
+| `fuu untrust [folder]`        | stop loading the vault in this folder, or in the one named    |
 | `fuu set KEY [value]`         | store a secret, reads stdin or prompts when omitted           |
 | `fuu unset KEY`               | delete a secret                                               |
 | `fuu get KEY`                 | print one value                                               |

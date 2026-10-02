@@ -27,8 +27,11 @@ surface, what fuu handles, and what it accepts on purpose.
   seeds sealed to it in `account.toml` in your config dir, and none of them
   opens on another chip.
 - **Local pins.** One small file in your config dir, mapping each folder to
-  the account that opens it and the id of the vault it is trusted to hold. It lives outside the vault on
-  purpose, a trust anchor read from the file it verifies proves nothing.
+  the account that opens it and the id of the vault it is trusted to hold. It
+  lives outside the vault on purpose, a trust anchor read from the file it
+  verifies proves nothing. On Windows both this file and `account.toml` sit
+  in the local app data dir, the roaming one would carry them to other
+  machines.
 - **The hook.** `fuu env` output eval'd by your shell at every prompt.
 
 ## How the sealing works
@@ -50,21 +53,24 @@ One 32 byte account seed does everything.
   XChaCha20-Poly1305. Only that chip opens it.
 - **Per vault.** The vault key is HKDF-SHA256 of the account seed under the
   vault's own random 16 byte salt. Nothing is wrapped and nothing about the
-  key is stored. A fresh salt is a fresh key.
-- **Vault id.** 16 random bytes picked at `fuu init`, sealed under the vault
+  key is stored. A fresh salt is a fresh key. The vault key itself goes into
+  no cipher and no MAC. Two keys come out of it by HKDF-Expand under labels
+  of their own, a seal key and a token key, so no key ever serves two
+  primitives.
+- **Vault id.** 16 random bytes picked at `fuu init`, sealed under the seal
   key as `check`. It opens only under the right account, so it doubles as the
   proof that the vault is yours, and it survives every rotation. This is what
   a folder is pinned to.
 - **Versioning.** One format number covers the vault file, the account file
   and every label above, all of which start with `fuu/v1/`. A breaking change
   bumps it, and nothing sealed under one version opens under another.
-- **Values.** XChaCha20-Poly1305 under the vault key, a fresh random 24 byte
+- **Values.** XChaCha20-Poly1305 under the seal key, a fresh random 24 byte
   nonce per write. The plaintext is the name and the value with a NUL between
   them, and the entry's token is bound in as additional data, so a body cut
   from one entry cannot be pasted into another and a name cannot be swapped
   under an old value.
 - **Names.** A key name never enters the file in the clear. Each entry is
-  addressed by an HMAC token of its name under the vault key, and the name
+  addressed by an HMAC token of its name under the token key, and the name
   itself is sealed inside that entry's own ciphertext. The token is stable for
   the life of the vault key, so a diff still shows which entry changed while
   the name stays out of the file.
@@ -100,7 +106,7 @@ That readable surface is the whole format:
 ```toml
 version = 1
 salt = "..."  # 16 random bytes, base64url, the vault key is HKDF(account seed, salt)
-check = "..." # the vault id, sealed under the vault key
+check = "..." # the vault id, sealed under the vault's seal key
 
 [secret]
 Wq4RKx3a9fQm2Zt7 = "..." # one line per value, under an HMAC token of its name
@@ -148,14 +154,15 @@ per repository.
 
 Handled. The hook maps your working directory to the nearest `.fuu.toml` up
 to and including the git root. A folder this machine has never trusted loads
-nothing, and `fuu trust` refuses any vault that does not open under your
-account. A
-vault file over 4 MiB is refused before it is hashed or parsed, so a giant one
-cannot stall your prompt. Once a folder is trusted, walking into it loads the
-vault into your shell. fuu runs
-nothing from the repo, but anything you build or run there inherits the
-environment. That is a deliberate trade. If you would not paste a key into a
-terminal in that folder, do not stand in it while the hook is active.
+nothing, and its file is not opened at all, the pin is checked first.
+`fuu trust` refuses any vault that does not open under your account. Where a
+file is read, a link, a pipe or a device in its place is refused unopened and
+anything over 5 MiB is refused before it is hashed or parsed, so neither a
+read that never returns nor a giant file can stall your prompt. Once a folder
+is trusted, walking into it loads the vault into your shell. fuu runs nothing
+from the repo, but anything you build or run there inherits the environment.
+That is a deliberate trade. If you would not paste a key into a terminal in
+that folder, do not stand in it while the hook is active.
 
 ### Someone writes your config dir
 
@@ -173,6 +180,11 @@ control of the TPM device file on a running machine is the access control for
 the key. Any process of yours that can reach the chip can unseal the account
 seed without a prompt, and with it every vault. The device key stops a stolen
 vault file and a stolen disk image. It stops nothing already running as you.
+
+A stolen machine is the same case unless its disk is encrypted. Whoever boots
+it can read `account.toml` and ask the chip to open it, nothing ties the key
+to your login or to the boot state. Full disk encryption is what covers a
+laptop left on a train.
 
 Secrets are plaintext in your shell's environment while a repository is
 loaded, that is the product. Inside fuu nothing is zeroed: strings and
@@ -200,16 +212,30 @@ their issuers as always.
 **The eval path.** `fuu env` output is eval'd by your shell, so key names must
 be plain identifiers and anything else is an error rather than output. Names
 that would be shell configuration rather than a secret, `PROMPT_COMMAND`,
-`PATH`, `LD_PRELOAD`, `EDITOR` and about fifty more, are refused at `fuu set`,
-at `fuu edit` and by the vault itself, so no such key can ever leak into your
-shell or into `fuu run`'s child. Values are single quoted per shell dialect
-and the hook asks for its dialect explicitly, so no inherited variable can
-switch it under them. Values with a NUL byte are refused, the shell would
+`PATH`, `LD_PRELOAD`, `EDITOR`, `LESSOPEN`, `MAILPATH` and about eighty more,
+are refused at `fuu set`, at `fuu edit` and by the vault itself, so none of
+them reaches your shell or `fuu run`'s child. It is a blocklist, it knows the
+names it knows. Only someone holding the account passphrase can store a name
+at all, so what it guards against is a member of a group account, and against
+that it is a second line, not a proof. Values are single quoted per shell
+dialect and the hook asks for its dialect explicitly, so no inherited variable
+can switch it under them. Values with a NUL byte are refused, the shell would
 silently drop the byte.
+
+A variable your shell already exported under a name a vault takes over is
+kept in `FUU_SAVED_<name>` while the vault is loaded and put back when you
+leave. It goes through the same name rules on the way back.
 
 The hook announces what it moved in or out of your shell at the terminal,
 names only. Values never appear there. Control bytes are stripped from
 anything fuu prints, so a hostile file cannot rewrite your terminal.
+
+**Login.** The check characters catch a typo, not a passphrase of the wrong
+account, every passphrase fuu generated passes them. So when a machine
+already holds an account under another passphrase, `fuu login` asks before it
+replaces the seed and reseals that account's vaults. A yes there hands those
+vaults to whoever holds the new passphrase, which is right after a rotation
+and wrong in every other case.
 
 **The edit buffer.** `fuu edit` shows plaintext in a private temp dir, on the
 per-user runtime dir where there is one, removed when the editor closes, swap
