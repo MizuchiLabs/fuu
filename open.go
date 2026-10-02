@@ -23,6 +23,12 @@ var (
 	)
 )
 
+// chipError marks a failure to reach the TPM. The hook tries those again at
+// the next prompt, its fingerprint covers every input but the chip.
+type chipError struct{ error }
+
+func (e chipError) Unwrap() error { return e.error }
+
 // --vault wins, otherwise the nearest .fuu.toml up to and including the git root, never above it.
 func vaultPath(cmd *cli.Command) (string, error) {
 	if cmd.IsSet("vault") {
@@ -74,12 +80,9 @@ func repoVaultPath() (string, error) {
 	}
 }
 
-// Touches no key material and no TPM, so a folder nobody vouched for never reaches the chip.
+// The pin comes first, so the file of a folder nobody vouched for is never
+// opened and never parsed, and nothing here touches key material or the TPM.
 func loadTrusted(path string) (*vault.File, pin, error) {
-	f, err := vault.Load(path)
-	if err != nil {
-		return nil, pin{}, err
-	}
 	dir, err := vaultDir(path)
 	if err != nil {
 		return nil, pin{}, err
@@ -90,7 +93,15 @@ func loadTrusted(path string) (*vault.File, pin, error) {
 	}
 	p := pins[dir]
 	if p.ID == "" {
+		// A missing file still says so, lstat opens nothing.
+		if _, err := os.Lstat(path); err != nil {
+			return nil, pin{}, fmt.Errorf("vault: %w", err)
+		}
 		return nil, pin{}, errUntrusted
+	}
+	f, err := vault.Load(path)
+	if err != nil {
+		return nil, pin{}, err
 	}
 	return f, p, nil
 }
@@ -147,7 +158,7 @@ func unlock(cmd *cli.Command) (string, *vault.File, []byte, error) {
 	}
 	dk, err := devkey.Open()
 	if err != nil {
-		return path, nil, nil, err
+		return path, nil, nil, chipError{err}
 	}
 	defer func() { _ = dk.Close() }()
 

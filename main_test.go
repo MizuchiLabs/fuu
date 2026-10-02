@@ -572,6 +572,30 @@ func TestEnvReportsRefusalOnce(t *testing.T) {
 	}
 }
 
+// A login changes what a vault opens under without touching the vault or
+// the pin, so the hook's fingerprint has to move with the account file.
+func TestStateFollowsAccount(t *testing.T) {
+	isolatePins(t)
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
+	_, dk, id := writeVault(t, path)
+	pinFolder(t, path, id)
+
+	before, err := vaultState(path)
+	if err != nil {
+		t.Fatalf("vaultState: %v", err)
+	}
+	if err := saveAccount(dk, "acme", newTestAccount(t)); err != nil {
+		t.Fatalf("saveAccount: %v", err)
+	}
+	after, err := vaultState(path)
+	if err != nil {
+		t.Fatalf("vaultState after the account changed: %v", err)
+	}
+	if before == after {
+		t.Fatal("the fingerprint did not move with the account file, the hook would stay stale after a login")
+	}
+}
+
 // Moved names are said out loud, a held state says nothing, and the exact wording is not the contract.
 func TestAnnounce(t *testing.T) {
 	for _, tc := range []struct {

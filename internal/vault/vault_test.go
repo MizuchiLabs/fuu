@@ -458,6 +458,26 @@ func TestReadRefusesHugeFile(t *testing.T) {
 	}
 }
 
+// A link is refused unopened, what it points at could be a pipe that never answers.
+func TestReadRefusesLink(t *testing.T) {
+	f, _, _ := newFixture(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.toml")
+	if err := f.Save(target); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	link := filepath.Join(dir, ".fuu.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if _, err := Read(link); err == nil {
+		t.Fatal("Read followed a link")
+	}
+	if _, err := Read(target); err != nil {
+		t.Fatalf("Read of the plain file: %v", err)
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

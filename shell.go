@@ -134,6 +134,12 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(os.Stderr, "fuu: %s\n", sanitize(present(err)))
 		out.unload(loaded)
 		announce(path, loaded, nil)
+		// The chip is the one input the fingerprint leaves out, so a failure
+		// to reach it is not remembered and the next prompt tries again.
+		if _, chip := errors.AsType[chipError](err); chip {
+			out.dropState()
+			return nil
+		}
 		out.export("FUU_STATE", state)
 		return nil
 	}
@@ -150,7 +156,10 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// The shell can tell it is already current without unsealing anything.
+// The shell can tell it is already current without unsealing anything. The
+// fingerprint covers the folder, its pin, the account file and the vault, so
+// a login or a trust is picked up at the next prompt. The vault of an
+// untrusted folder is left out, that file is never opened.
 func vaultState(path string) (string, error) {
 	dir, err := vaultDir(path)
 	if err != nil {
@@ -160,21 +169,29 @@ func vaultState(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := vault.Read(path)
+	p := pins[dir]
+	var data []byte
+	if p.ID != "" {
+		if data, err = vault.Read(path); err != nil {
+			return "", err
+		}
+	}
+	accountFile, err := accountPath()
 	if err != nil {
 		return "", err
 	}
-	p := pins[dir]
-	buf := make([]byte, 0, len(dir)+len(data)+len(p.Account)+len(p.ID)+3)
-	buf = append(buf, dir...)
-	buf = append(buf, 0)
-	buf = append(buf, data...)
-	buf = append(buf, 0)
-	buf = append(buf, p.Account...)
-	buf = append(buf, 0)
-	buf = append(buf, p.ID...)
-	sum := sha256.Sum256(buf)
-	return hex.EncodeToString(sum[:]), nil
+	accounts, err := os.ReadFile(accountFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("account: %w", err)
+	}
+
+	h := sha256.New()
+	for _, part := range [][]byte{[]byte(dir), []byte(p.Account), []byte(p.ID), accounts, data} {
+		// Length first, so no two splits of the same bytes hash alike.
+		fmt.Fprintf(h, "%d:", len(part))
+		h.Write(part)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Values never appear here, and a move that changes no names says nothing.

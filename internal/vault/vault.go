@@ -51,7 +51,16 @@ type File struct {
 }
 
 // Read reads the vault file at path, refusing anything too large to be one.
+// A link, a pipe or a device is refused before it is opened, a read on one
+// of those could block forever.
 func Read(path string) ([]byte, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("vault: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("vault: %s is not a regular file, refusing it as a vault", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("vault: read %s: %w", path, err)
@@ -121,13 +130,9 @@ func (f *File) Save(path string) error {
 	if err := toml.NewEncoder(&buf).Encode(f); err != nil {
 		return fmt.Errorf("vault: encode: %w", err)
 	}
-	current, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-	case errors.Is(err, os.ErrNotExist):
-		current = nil
-	default:
-		return fmt.Errorf("vault: read %s: %w", path, err)
+	current, err := Read(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if !bytes.Equal(current, f.raw) {
 		return ErrConflict
