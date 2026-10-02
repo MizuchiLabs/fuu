@@ -52,8 +52,7 @@ func cmdSet(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// Enable rather than Set: writing a value for a commented out key brings it back.
-	if err := f.Enable(key, name, value); err != nil {
+	if err := f.Set(key, name, value); err != nil {
 		return err
 	}
 	return f.Save(path)

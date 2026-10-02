@@ -105,13 +105,8 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range slices.Concat(changed, added) {
+	for _, name := range slices.Concat(changed, added, enabled) {
 		if err := f.Set(key, name, edited[name]); err != nil {
-			return err
-		}
-	}
-	for _, name := range enabled {
-		if err := f.Enable(key, name, edited[name]); err != nil {
 			return err
 		}
 	}

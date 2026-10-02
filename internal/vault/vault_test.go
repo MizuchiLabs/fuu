@@ -341,24 +341,24 @@ func TestDisableKeepsEntry(t *testing.T) {
 		t.Fatalf("disabled entries after reload = %v", off)
 	}
 
-	if err := reloaded.Enable(key, "API_KEY", "s3cret"); err != nil {
-		t.Fatalf("Enable: %v", err)
+	if err := reloaded.Set(key, "API_KEY", "s3cret"); err != nil {
+		t.Fatalf("Set of a disabled key: %v", err)
 	}
 	if err := reloaded.Save(path); err != nil {
-		t.Fatalf("Save after Enable: %v", err)
+		t.Fatalf("Save after Set: %v", err)
 	}
 	if strings.Contains(string(mustRead(t, path)), "[disabled]") {
 		t.Fatal("an emptied disabled table is still written")
 	}
 	values, err = reloaded.Secrets(key)
 	if err != nil {
-		t.Fatalf("Secrets after Enable: %v", err)
+		t.Fatalf("Secrets after Set: %v", err)
 	}
 	if values["API_KEY"] != "s3cret" {
-		t.Fatalf("values after Enable = %v", values)
+		t.Fatalf("values after Set = %v", values)
 	}
 	if off, err = reloaded.DisabledSecrets(key); err != nil || len(off) != 0 {
-		t.Fatalf("disabled entries after Enable = %v, %v", off, err)
+		t.Fatalf("disabled entries after Set = %v, %v", off, err)
 	}
 }
 

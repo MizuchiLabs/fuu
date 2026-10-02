@@ -223,7 +223,9 @@ func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 	return string(name), string(value), nil
 }
 
-// Set stores one value under the token its name derives to, rewriting only that body.
+// Set stores one value under the token its name derives to, rewriting only
+// that body. A commented out entry of the same name goes, so writing a value
+// brings the key back into the shell.
 func (f *File) Set(key []byte, name, value string) error {
 	if !ValidName(name) {
 		return fmt.Errorf("%w %q", ErrBadName, name)
@@ -237,6 +239,7 @@ func (f *File) Set(key []byte, name, value string) error {
 		return err
 	}
 	f.Secret[tok] = body
+	delete(f.Disabled, tok)
 	return nil
 }
 
@@ -258,16 +261,6 @@ func (f *File) Disable(key []byte, name string) error {
 	}
 	f.Disabled[tok] = sealed
 	delete(f.Secret, tok)
-	return nil
-}
-
-// Enable drops any disabled entry of the same name, so an uncommented key is
-// back in the shell.
-func (f *File) Enable(key []byte, name, value string) error {
-	if err := f.Set(key, name, value); err != nil {
-		return err
-	}
-	delete(f.Disabled, token(key, name))
 	return nil
 }
 

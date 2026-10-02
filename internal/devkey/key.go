@@ -5,7 +5,6 @@ import (
 	"crypto/ecdh"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport"
@@ -15,7 +14,6 @@ import (
 type Key struct {
 	tpm transport.TPMCloser
 	key *primaryKey
-	mu  sync.Mutex
 }
 
 // Open derives this machine's device key. A missing or unusable TPM is a
@@ -40,8 +38,6 @@ func (k *Key) Public() *ecdh.PublicKey {
 // ECDH multiplies the device key by peer inside the TPM and returns the
 // shared X coordinate.
 func (k *Key) ECDH(peer *ecdh.PublicKey) ([]byte, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
 	return ecdhZGen(k.tpm, k.key, peer)
 }
 

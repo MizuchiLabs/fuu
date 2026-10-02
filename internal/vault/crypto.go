@@ -77,7 +77,7 @@ func tokenOf(key []byte, info string) string {
 // shown grouped for reading.
 func DeriveAccount(passphrase string) []byte {
 	return argon2.IDKey(
-		[]byte(NormalizePassphrase(passphrase)), []byte(accountSalt),
+		[]byte(normalizePassphrase(passphrase)), []byte(accountSalt),
 		argon2Time, argon2Mem, 1, vaultKeySize,
 	)
 }
@@ -92,7 +92,7 @@ func NewPassphrase() string {
 // CheckPassphrase reports whether passphrase carries the check characters
 // NewPassphrase gave it.
 func CheckPassphrase(passphrase string) bool {
-	n := NormalizePassphrase(passphrase)
+	n := normalizePassphrase(passphrase)
 	if len(n) <= passphraseCheckSize {
 		return false
 	}
@@ -105,8 +105,8 @@ func passphraseCheck(body string) string {
 	return base32.StdEncoding.EncodeToString(sum[:])[:passphraseCheckSize]
 }
 
-// NormalizePassphrase drops what a human adds or changes while copying one out.
-func NormalizePassphrase(passphrase string) string {
+// normalizePassphrase drops what a human adds or changes while copying one out.
+func normalizePassphrase(passphrase string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '-' || unicode.IsSpace(r) {
 			return -1

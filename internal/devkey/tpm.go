@@ -35,15 +35,6 @@ func noTPMError(cause error) error {
 	)
 }
 
-// Available reports whether a TPM 2.0 device can be opened on this machine.
-func Available() error {
-	dev, err := openTPMDevice()
-	if err != nil {
-		return fmt.Errorf("devkey: open tpm: %w", err)
-	}
-	return dev.Close()
-}
-
 // eccECDHTemplate has no auth value and no PCR policy, control of the
 // TPM device file is the access control.
 func eccECDHTemplate() tpm2.TPMTPublic {

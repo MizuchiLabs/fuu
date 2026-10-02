@@ -10,8 +10,12 @@ import (
 // openKey derives a key against this machine's TPM, skipping the test when no TPM can be used.
 func openKey(t *testing.T) *Key {
 	t.Helper()
-	if err := Available(); err != nil {
+	dev, err := openTPMDevice()
+	if err != nil {
 		t.Skipf("tpm unavailable: %v", err)
+	}
+	if err := dev.Close(); err != nil {
+		t.Fatalf("close tpm: %v", err)
 	}
 	k, err := Open()
 	if err != nil {
