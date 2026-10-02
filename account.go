@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 
 	"github.com/urfave/cli/v3"
@@ -387,11 +388,26 @@ func replaceIfUnchanged(path string, was, data []byte) error {
 
 // Lives next to the pins, sealed to this machine's chip and useless anywhere else.
 func accountPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := configDir()
 	if err != nil {
 		return "", fmt.Errorf("account: %w", err)
 	}
-	return filepath.Join(dir, "fuu", "account.toml"), nil
+	return filepath.Join(dir, "account.toml"), nil
+}
+
+// Seals and pins are this machine's own. The config dir of Windows roams to
+// other machines, the local one stays.
+func configDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+			return filepath.Join(dir, "fuu"), nil
+		}
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "fuu"), nil
 }
 
 // readAccounts is nil when this machine holds no account at all.

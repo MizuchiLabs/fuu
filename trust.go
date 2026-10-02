@@ -156,11 +156,11 @@ func openAny(f *vault.File, dk vault.DeviceKey) (string, []byte, string, error) 
 // Lives outside the vault on purpose: a trust anchor read from the file it
 // verifies proves nothing.
 func trustedPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := configDir()
 	if err != nil {
 		return "", fmt.Errorf("trust: %w", err)
 	}
-	return filepath.Join(dir, "fuu", "trusted.toml"), nil
+	return filepath.Join(dir, "trusted.toml"), nil
 }
 
 // pin is what a folder is trusted to hold: the account that opens it and the vault's id.
