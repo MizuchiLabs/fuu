@@ -278,6 +278,9 @@ func TestValidName(t *testing.T) {
 		{"path", false},
 		{"LD_PRELOAD", false},
 		{"FUU_STATE", false},
+		{"MAILPATH", false},
+		{"LESSOPEN", false},
+		{"git_pager", false},
 	} {
 		if got := ValidName(tc.name); got != tc.want {
 			t.Fatalf("ValidName(%q) = %v, want %v", tc.name, got, tc.want)
