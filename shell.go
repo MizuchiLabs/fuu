@@ -145,10 +145,10 @@ func cmdEnv(_ context.Context, cmd *cli.Command) error {
 
 	for _, name := range loaded {
 		if _, ok := values[name]; !ok {
-			out.unset(name)
+			out.release(name)
 		}
 	}
-	names := emitValues(out, values)
+	names := emitValues(out, values, loaded)
 	out.export("FUU_LOADED", strings.Join(names, " "))
 	out.export("FUU_STATE", state)
 	announce(path, loaded, names)

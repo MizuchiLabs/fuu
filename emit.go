@@ -18,11 +18,15 @@ var stateNames = map[string]struct{}{
 	"FUU_STATE":  {},
 }
 
+// savedPrefix marks what the shell had exported under a name before a vault
+// took it over, so leaving the folder gives it back.
+const savedPrefix = "FUU_SAVED_"
+
 func emitName(name string) bool {
 	if _, ok := stateNames[name]; ok {
 		return true
 	}
-	return vault.ValidName(name)
+	return vault.ValidName(strings.TrimPrefix(name, savedPrefix))
 }
 
 type emitter struct{ fish bool }
@@ -38,9 +42,13 @@ func emitterFor(cmd *cli.Command) (emitter, error) {
 	}
 }
 
-func emitValues(out emitter, values map[string]string) []string {
+func emitValues(out emitter, values map[string]string, loaded []string) []string {
 	names := make([]string, 0, len(values))
 	for _, name := range slices.Sorted(maps.Keys(values)) {
+		// Only a name fuu did not load itself can hold a value of the shell's own.
+		if old, ok := os.LookupEnv(name); ok && !slices.Contains(loaded, name) {
+			out.export(savedPrefix+name, old)
+		}
 		out.export(name, values[name])
 		names = append(names, name)
 	}
@@ -70,10 +78,21 @@ func (e emitter) unset(name string) {
 	fmt.Printf("unset %s\n", name)
 }
 
+// release takes a loaded name out again and gives back what it shadowed.
+func (e emitter) release(name string) {
+	saved, ok := os.LookupEnv(savedPrefix + name)
+	if !ok {
+		e.unset(name)
+		return
+	}
+	e.export(name, saved)
+	e.unset(savedPrefix + name)
+}
+
 // Prints nothing at all when nothing was loaded, so a stray cd costs no output.
 func (e emitter) unload(loaded []string) {
 	for _, name := range loaded {
-		e.unset(name)
+		e.release(name)
 	}
 	if len(loaded) == 0 && os.Getenv("FUU_LOADED") == "" {
 		return

@@ -215,3 +215,38 @@ func TestUnload(t *testing.T) {
 		t.Errorf("state only unload = %q, want %q", got, want)
 	}
 }
+
+// A variable the shell exported on its own is kept while a vault shadows it
+// and given back on the way out, not just unset.
+func TestShadowedValueComesBack(t *testing.T) {
+	posix := emitter{}
+	t.Setenv("AWS_PROFILE", "personal")
+
+	got := captureOutput(t, func() { emitValues(posix, map[string]string{"AWS_PROFILE": "work"}, nil) })
+	want := "export FUU_SAVED_AWS_PROFILE='personal'\nexport AWS_PROFILE='work'\n"
+	if got != want {
+		t.Errorf("first load = %q, want %q", got, want)
+	}
+
+	// A name fuu already holds carries the vault's value, there is nothing to keep.
+	got = captureOutput(t, func() {
+		emitValues(posix, map[string]string{"AWS_PROFILE": "work"}, []string{"AWS_PROFILE"})
+	})
+	if want = "export AWS_PROFILE='work'\n"; got != want {
+		t.Errorf("reload = %q, want %q", got, want)
+	}
+
+	t.Setenv("FUU_LOADED", "AWS_PROFILE")
+	t.Setenv("FUU_SAVED_AWS_PROFILE", "personal")
+	got = captureOutput(t, func() { posix.unload([]string{"AWS_PROFILE"}) })
+	want = "export AWS_PROFILE='personal'\nunset FUU_SAVED_AWS_PROFILE\nunset FUU_LOADED\n"
+	if got != want {
+		t.Errorf("unload = %q, want %q", got, want)
+	}
+
+	// The saved slot is no way around the name rules.
+	t.Setenv("FUU_SAVED_PATH", "/evil")
+	if got = captureOutput(t, func() { posix.release("PATH") }); got != "" {
+		t.Errorf("release(PATH) = %q, want silence", got)
+	}
+}
