@@ -155,10 +155,34 @@ func login(ctx context.Context, dk vault.DeviceKey, name, pass string) error {
 		fmt.Println("already logged in")
 		return nil
 	case err == nil:
+		// Any valid passphrase gets this far, one of another account included,
+		// and moving would hand this account's vaults to whoever holds that one.
+		pins, err := loadPins()
+		if err != nil {
+			return err
+		}
+		trusted := 0
+		for _, p := range pins {
+			if p.Account == name {
+				trusted++
+			}
+		}
+		ok, err := confirm(ctx, fmt.Sprintf(
+			"account %s is already on this machine under another passphrase. Replace it and reseal its vaults, "+
+				"%d trusted here, to this one? Yes after a rotation, no if this passphrase is for another account",
+			name, trusted,
+		))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("aborted, nothing changed")
+		}
 		if err := moveVaults(name, old, account); err != nil {
 			return err
 		}
-	case errors.Is(err, errNoAccount), errors.Is(err, vault.ErrOtherDevice):
+	// A seal that opens nowhere is replaced, the passphrase is all it takes to make a new one.
+	case errors.Is(err, errNoAccount), errors.Is(err, vault.ErrOtherDevice), errors.Is(err, vault.ErrBadSeal):
 	default:
 		return err
 	}

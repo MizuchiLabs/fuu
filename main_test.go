@@ -288,6 +288,8 @@ func TestRotatePassphraseThenLogin(t *testing.T) {
 	if _, _, err := openPinned(laptopCopy, laptop); !errors.Is(err, vault.ErrWrongAccount) {
 		t.Fatalf("openPinned before login = %v, want ErrWrongAccount", err)
 	}
+	// The laptop still holds the old seed, so login asks before it moves anything.
+	feedStdin(t, "y\n")
 	captureOutput(t, func() {
 		if err := login(t.Context(), laptop, vault.DefaultAccount, newPass); err != nil {
 			t.Fatalf("login with the new passphrase: %v", err)
@@ -374,6 +376,66 @@ func TestTeamAccount(t *testing.T) {
 		if _, _, err := openPinned(path, me); err != nil {
 			t.Fatalf("openPinned %s after the team rotation: %v", path, err)
 		}
+	}
+}
+
+// The passphrase of another account passes the typo check too, so login asks
+// before it reseals anything and a no leaves every file as it was.
+func TestLoginAsksBeforeMoving(t *testing.T) {
+	isolatePins(t)
+	dk := newSoftKey(t)
+	mine := filepath.Join(t.TempDir(), ".fuu.toml")
+	feedStdin(t, "y\n")
+	captureOutput(t, func() {
+		if err := initVault(t.Context(), mine, dk, vault.DefaultAccount); err != nil {
+			t.Fatalf("initVault: %v", err)
+		}
+	})
+	before := mustRead(t, mine)
+	seed, err := unsealAccount(dk, vault.DefaultAccount)
+	if err != nil {
+		t.Fatalf("unsealAccount: %v", err)
+	}
+
+	feedStdin(t, "n\n")
+	if err := login(t.Context(), dk, vault.DefaultAccount, vault.NewPassphrase()); err == nil {
+		t.Fatal("login under another passphrase went through after a no")
+	}
+	if !bytes.Equal(mustRead(t, mine), before) {
+		t.Fatal("a declined login resealed the vault")
+	}
+	if got, err := unsealAccount(dk, vault.DefaultAccount); err != nil || !bytes.Equal(got, seed) {
+		t.Fatalf("a declined login replaced the account: %v", err)
+	}
+}
+
+// A seal that no longer opens is replaced by a login, the error that says
+// to log in must not come from login itself.
+func TestLoginReplacesBrokenSeal(t *testing.T) {
+	isolatePins(t)
+	_, dk, _ := writeVault(t, filepath.Join(t.TempDir(), ".fuu.toml"))
+
+	accounts, err := readAccounts()
+	if err != nil {
+		t.Fatalf("readAccounts: %v", err)
+	}
+	seal := accounts.Account[vault.DefaultAccount]
+	seal.Wrap = strings.Repeat("A", len(seal.Wrap))
+	accounts.Account[vault.DefaultAccount] = seal
+	if err := writeAccounts(accounts); err != nil {
+		t.Fatalf("writeAccounts: %v", err)
+	}
+	if _, err := unsealAccount(dk, vault.DefaultAccount); !errors.Is(err, vault.ErrBadSeal) {
+		t.Fatalf("unsealAccount of a broken seal = %v, want ErrBadSeal", err)
+	}
+
+	captureOutput(t, func() {
+		if err := login(t.Context(), dk, vault.DefaultAccount, vault.NewPassphrase()); err != nil {
+			t.Fatalf("login over a broken seal: %v", err)
+		}
+	})
+	if _, err := unsealAccount(dk, vault.DefaultAccount); err != nil {
+		t.Fatalf("unsealAccount after login: %v", err)
 	}
 }
 

@@ -19,8 +19,7 @@ var (
 		"the accounts on this machine are sealed to another TPM, it was cleared or the file was copied, run fuu login",
 	)
 	ErrBadAccountName = errors.New("not a valid account name, want lowercase letters, digits, - and _")
-
-	errBadAccount = errors.New("the account file does not open, run fuu login")
+	ErrBadSeal        = errors.New("the account file does not open, run fuu login")
 )
 
 // Accounts is this machine's copy of every account seed it has logged in to,
@@ -71,7 +70,7 @@ func (a *Accounts) Unseal(dk DeviceKey, name string) ([]byte, bool, error) {
 	}
 	seed, err := unwrapKey(dk, s.EPub, s.Wrap, accountInfo+"\x00"+name)
 	if err != nil || len(seed) != vaultKeySize {
-		return nil, true, errBadAccount
+		return nil, true, ErrBadSeal
 	}
 	return seed, true, nil
 }
