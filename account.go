@@ -321,6 +321,11 @@ func sweep(verb, account string, fn func(path string, p pin) (bool, error)) erro
 		}
 		path := filepath.Join(dir, vaultFile)
 		data, err := vault.Read(path)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("skipped %s: no vault there any more, fuu untrust with that folder forgets it\n",
+				sanitize(displayPath(dir)))
+			continue
+		}
 		if err != nil {
 			fmt.Printf("skipped %s: %s\n", sanitize(displayPath(dir)), sanitize(present(err)))
 			continue

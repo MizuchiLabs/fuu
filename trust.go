@@ -94,6 +94,40 @@ func trust(ctx context.Context, path string, dk vault.DeviceKey) error {
 	return nil
 }
 
+// A folder argument reaches a checkout that is already gone, where no vault
+// is left to find.
+func cmdUntrust(_ context.Context, cmd *cli.Command) error {
+	if folder := cmd.Args().Get(0); folder != "" {
+		return untrust(filepath.Join(folder, vaultFile))
+	}
+	path, err := vaultPath(cmd)
+	if err != nil {
+		return err
+	}
+	return untrust(path)
+}
+
+// The way back from fuu trust, it needs neither the vault nor the chip.
+func untrust(path string) error {
+	dir, err := vaultDir(path)
+	if err != nil {
+		return err
+	}
+	pins, err := loadPins()
+	if err != nil {
+		return err
+	}
+	if pins[dir].ID == "" {
+		return fmt.Errorf("untrust: %s is not trusted on this machine", dir)
+	}
+	delete(pins, dir)
+	if err := savePins(pins); err != nil {
+		return err
+	}
+	fmt.Printf("forgot %s, its vault no longer loads here\n", sanitize(dir))
+	return nil
+}
+
 // openAny tries every account on this machine, the default one first, and
 // names the one the vault belongs to.
 func openAny(f *vault.File, dk vault.DeviceKey) (string, []byte, string, error) {

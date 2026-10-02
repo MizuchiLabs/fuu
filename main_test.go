@@ -658,6 +658,29 @@ func TestStateFollowsAccount(t *testing.T) {
 	}
 }
 
+// Untrust is the way back from trust, by folder so a checkout that is gone can go too.
+func TestUntrust(t *testing.T) {
+	isolatePins(t)
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
+	_, _, id := writeVault(t, path)
+	dir := pinFolder(t, path, id)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the vault: %v", err)
+	}
+
+	captureOutput(t, func() {
+		if err := untrust(filepath.Join(dir, vaultFile)); err != nil {
+			t.Fatalf("untrust: %v", err)
+		}
+	})
+	if _, ok := mustPins(t)[dir]; ok {
+		t.Fatal("untrust left the pin in place")
+	}
+	if err := untrust(path); err == nil {
+		t.Fatal("untrust of a folder that is not trusted said nothing")
+	}
+}
+
 // Moved names are said out loud, a held state says nothing, and the exact wording is not the contract.
 func TestAnnounce(t *testing.T) {
 	for _, tc := range []struct {

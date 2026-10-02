@@ -55,6 +55,12 @@ var commands = []*cli.Command{
 		Action: cmdTrust,
 	},
 	{
+		Name:      "untrust",
+		Usage:     "stop loading the vault in this folder, or in the one named",
+		ArgsUsage: "[folder]",
+		Action:    cmdUntrust,
+	},
+	{
 		Name:      "set",
 		Usage:     "set a secret value",
 		ArgsUsage: "<KEY> [value]",
