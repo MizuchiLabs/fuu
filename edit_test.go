@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"maps"
 	"os"
 	"path/filepath"
@@ -161,5 +162,46 @@ func TestEditDropsCommentedKey(t *testing.T) {
 	}
 	if off, err := f.DisabledSecrets(key); err != nil || len(off) != 0 {
 		t.Fatalf("commented out entries after dropping = %v, %v", off, err)
+	}
+}
+
+// A buffer that does not parse is opened again as it was left, so a typo
+// does not cost the rest of the edit.
+func TestEditReopensBrokenBuffer(t *testing.T) {
+	path, key, dk := pinnedVault(t)
+
+	// The first pass adds a key and a broken line, the second only repairs it.
+	useEditor(t, `if [ -e "$1.seen" ]; then
+	sed -i '/^BROKEN/d' "$1"
+else
+	: > "$1.seen"
+	printf 'NEW_KEY = "kept"\nBROKEN = \n' >> "$1"
+fi`)
+	feedStdin(t, "y\n")
+	if err := edit(t.Context(), path, dk); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+
+	f, err := vault.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if values, err := f.Secrets(key); err != nil || values["NEW_KEY"] != "kept" {
+		t.Fatalf("values after the second pass = %v, %v, want NEW_KEY kept", values, err)
+	}
+}
+
+// Saying no gives the parse error back and writes nothing.
+func TestEditGivesUpOnBrokenBuffer(t *testing.T) {
+	path, _, dk := pinnedVault(t)
+	before := mustRead(t, path)
+
+	useEditor(t, `printf 'BROKEN = \n' >> "$1"`)
+	feedStdin(t, "n\n")
+	if err := edit(t.Context(), path, dk); err == nil {
+		t.Fatal("edit accepted a buffer that does not parse")
+	}
+	if !bytes.Equal(mustRead(t, path), before) {
+		t.Fatal("a refused buffer still wrote the vault")
 	}
 }

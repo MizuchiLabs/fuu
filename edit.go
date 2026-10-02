@@ -47,11 +47,7 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 		return err
 	}
 
-	raw, err := runEditor(ctx, before, beforeOff)
-	if err != nil {
-		return err
-	}
-	edited, err := parseValues(raw)
+	raw, edited, err := runEditor(ctx, before, beforeOff)
 	if err != nil {
 		return err
 	}
@@ -140,16 +136,18 @@ func edit(ctx context.Context, path string, dk vault.DeviceKey) error {
 	return nil
 }
 
-// Commented out keys come along as commented lines, uncommenting one brings it back.
+// Commented out keys come along as commented lines, uncommenting one brings
+// it back. A buffer that does not parse can be opened again as it was left,
+// a typo should not cost the whole edit.
 //
 // the editor is whatever the user configured and the buffer paths come from a
 // fresh temp dir under the operator's own XDG_RUNTIME_DIR.
 //
 //nolint:gosec // G204, G703
-func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte, error) {
+func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte, map[string]string, error) {
 	argv := strings.Fields(editor())
 	if len(argv) == 0 {
-		return nil, errors.New("edit: set $EDITOR or $VISUAL")
+		return nil, nil, errors.New("edit: set $EDITOR or $VISUAL")
 	}
 
 	// Secrets in plaintext, so use the runtime dir and drop the whole
@@ -157,7 +155,7 @@ func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte,
 	dir := os.Getenv("XDG_RUNTIME_DIR")
 	tmp, err := os.MkdirTemp(dir, "fuu-edit-")
 	if err != nil {
-		return nil, fmt.Errorf("edit: %w", err)
+		return nil, nil, fmt.Errorf("edit: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 
@@ -165,13 +163,13 @@ func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte,
 	fmt.Fprint(&buf, "# save and close to write the changes back\n")
 	fmt.Fprint(&buf, "# comment out to disable a key, delete the line to drop it\n\n")
 	if err := toml.NewEncoder(&buf).Encode(values); err != nil {
-		return nil, fmt.Errorf("edit: %w", err)
+		return nil, nil, fmt.Errorf("edit: %w", err)
 	}
 	if len(disabled) > 0 {
 		fmt.Fprint(&buf, "\n# disabled, kept in the vault\n")
 		var dbuf bytes.Buffer
 		if err := toml.NewEncoder(&dbuf).Encode(disabled); err != nil {
-			return nil, fmt.Errorf("edit: %w", err)
+			return nil, nil, fmt.Errorf("edit: %w", err)
 		}
 		for line := range strings.SplitSeq(strings.TrimSuffix(dbuf.String(), "\n"), "\n") {
 			fmt.Fprintf(&buf, "# %s\n", line)
@@ -180,17 +178,36 @@ func runEditor(ctx context.Context, values, disabled map[string]string) ([]byte,
 
 	path := filepath.Join(tmp, "secrets.toml")
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
-		return nil, fmt.Errorf("edit: %w", err)
+		return nil, nil, fmt.Errorf("edit: %w", err)
 	}
 
-	child := exec.CommandContext(ctx, argv[0], append(argv[1:], path)...)
-	child.Stdin = os.Stdin
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
-	if err := child.Run(); err != nil {
-		return nil, fmt.Errorf("edit: run editor: %w", err)
+	args := slices.Concat(argv[1:], []string{path})
+	for {
+		child := exec.CommandContext(ctx, argv[0], args...)
+		child.Stdin = os.Stdin
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Run(); err != nil {
+			return nil, nil, fmt.Errorf("edit: %w from the editor, nothing written", err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("edit: %w", err)
+		}
+		edited, err := parseValues(raw)
+		if err == nil {
+			return raw, edited, nil
+		}
+
+		fmt.Fprintf(os.Stderr, "fuu: %s\n", sanitize(present(err)))
+		again, cerr := confirm(ctx, "open the buffer again, no drops your changes")
+		if cerr != nil {
+			return nil, nil, cerr
+		}
+		if !again {
+			return nil, nil, err
+		}
 	}
-	return os.ReadFile(path)
 }
 
 func editor() string {
