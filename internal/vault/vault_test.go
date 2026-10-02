@@ -107,8 +107,8 @@ func TestFileHidesNames(t *testing.T) {
 func TestSecretsRefusesSwappedBodies(t *testing.T) {
 	f, _, key := newFixture(t)
 
-	mine := token(key, "API_KEY")
-	other := token(key, "DATABASE_URL")
+	mine := mustToken(t, key, "API_KEY")
+	other := mustToken(t, key, "DATABASE_URL")
 	f.Secret[other] = f.Secret[mine]
 
 	if _, err := f.Secrets(key); err == nil {
@@ -208,7 +208,7 @@ func TestRotateToNewAccount(t *testing.T) {
 // Rotate authenticates the whole file before sealing anything new.
 func TestRotateRefusesTampered(t *testing.T) {
 	f, account, key := newFixture(t)
-	f.Secret[token(key, "API_KEY")] = f.Secret[token(key, "DATABASE_URL")]
+	f.Secret[mustToken(t, key, "API_KEY")] = f.Secret[mustToken(t, key, "DATABASE_URL")]
 	if _, err := f.Rotate(key, account); err == nil {
 		t.Fatal("Rotate ran past a tampered entry")
 	}
@@ -437,7 +437,7 @@ func TestDomainMatchesVersion(t *testing.T) {
 // A value smuggled in with a NUL byte is refused on read, not just on write.
 func TestSecretsRefusesNULValue(t *testing.T) {
 	f, _, key := newFixture(t)
-	tok := token(key, "API_KEY")
+	tok := mustToken(t, key, "API_KEY")
 	body, err := sealValue(key, []byte("API_KEY\x00a\x00b"), entryAAD+tok)
 	if err != nil {
 		t.Fatalf("sealValue: %v", err)
@@ -476,6 +476,15 @@ func TestReadRefusesLink(t *testing.T) {
 	if _, err := Read(target); err != nil {
 		t.Fatalf("Read of the plain file: %v", err)
 	}
+}
+
+func mustToken(t *testing.T, key []byte, name string) string {
+	t.Helper()
+	tok, err := token(key, name)
+	if err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	return tok
 }
 
 func mustRead(t *testing.T, path string) []byte {

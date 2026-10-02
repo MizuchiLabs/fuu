@@ -34,6 +34,10 @@ const (
 	passphraseCheckSize = 2
 	// vaultInfo derives a vault key from the account seed and the vault's own salt.
 	vaultInfo = domain + "vault"
+	// sealKeyInfo and tokenKeyInfo split a vault key in two, one key to seal
+	// with and one to make tokens with, so no key ever serves two primitives.
+	sealKeyInfo  = domain + "seal-key"
+	tokenKeyInfo = domain + "token-key"
 	// checkAAD binds the vault id to its slot.
 	checkAAD = domain + "check"
 	// entryAAD binds an encrypted body to its slot, so a body cut from one entry cannot be pasted into another.
@@ -61,15 +65,37 @@ type DeviceKey interface {
 
 // token is the stable opaque identifier a name is stored under, so a diff shows
 // which entry changed while the name stays out of the file.
-func token(key []byte, name string) string {
-	return tokenOf(key, nameInfo+name)
+func token(key []byte, name string) (string, error) {
+	tokenKey, err := subkey(key, tokenKeyInfo)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, tokenKey)
+	mac.Write([]byte(nameInfo + name))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:tokenSize]), nil
 }
 
-// tokenOf is the HMAC truncation a token is made of.
-func tokenOf(key []byte, info string) string {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(info))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:tokenSize])
+// subkey is the key for one job. The vault key itself goes into no cipher
+// and no MAC, it is only ever derived from.
+func subkey(key []byte, info string) ([]byte, error) {
+	sub, err := hkdf.Expand(sha256.New, key, info, vaultKeySize)
+	if err != nil {
+		return nil, fmt.Errorf("vault: hkdf: %w", err)
+	}
+	return sub, nil
+}
+
+// sealer is the AEAD every value and the vault id are sealed with.
+func sealer(key []byte) (cipher.AEAD, error) {
+	sealKey, err := subkey(key, sealKeyInfo)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := chacha20poly1305.NewX(sealKey)
+	if err != nil {
+		return nil, fmt.Errorf("vault: seal key: %w", err)
+	}
+	return aead, nil
 }
 
 // DeriveAccount turns the account passphrase into the account seed every vault
@@ -192,18 +218,18 @@ func unwrapKey(dk DeviceKey, ePub, body, info string) ([]byte, error) {
 // sealValue seals one plaintext under the vault key, bound to its aad slot so
 // bodies cannot be swapped between entries.
 func sealValue(key, plaintext []byte, aad string) (string, error) {
-	aead, err := chacha20poly1305.NewX(key)
+	aead, err := sealer(key)
 	if err != nil {
-		return "", fmt.Errorf("vault: vault key: %w", err)
+		return "", err
 	}
 	return sealBody(aead, plaintext, []byte(aad))
 }
 
 // openValue opens a body with the same aad it was sealed with, anything else fails as an error.
 func openValue(key []byte, body, aad string) ([]byte, error) {
-	aead, err := chacha20poly1305.NewX(key)
+	aead, err := sealer(key)
 	if err != nil {
-		return nil, fmt.Errorf("vault: vault key: %w", err)
+		return nil, err
 	}
 	return openBody(aead, body, []byte(aad))
 }

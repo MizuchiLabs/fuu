@@ -211,7 +211,11 @@ func openEntry(key []byte, tok, body, aad string) (string, string, error) {
 		return "", "", fmt.Errorf("vault: secret %s: %w", tok, err)
 	}
 	name, value, ok := bytes.Cut(plain, []byte{0})
-	if !ok || !ValidName(string(name)) || tok != token(key, string(name)) {
+	want, err := token(key, string(name))
+	if err != nil {
+		return "", "", err
+	}
+	if !ok || !ValidName(string(name)) || tok != want {
 		return "", "", fmt.Errorf(
 			"vault: secret %s is not sealed under this vault key, the file was tampered with",
 			tok,
@@ -233,7 +237,10 @@ func (f *File) Set(key []byte, name, value string) error {
 	if strings.ContainsRune(value, 0) {
 		return fmt.Errorf("%w %q", ErrNulValue, name)
 	}
-	tok := token(key, name)
+	tok, err := token(key, name)
+	if err != nil {
+		return err
+	}
 	body, err := sealValue(key, []byte(name+"\x00"+value), entryAAD+tok)
 	if err != nil {
 		return err
@@ -246,7 +253,10 @@ func (f *File) Set(key []byte, name, value string) error {
 // Disable moves the entry to the [disabled] table under a seal of its own,
 // so it stops loading without being lost.
 func (f *File) Disable(key []byte, name string) error {
-	tok := token(key, name)
+	tok, err := token(key, name)
+	if err != nil {
+		return err
+	}
 	body, ok := f.Secret[tok]
 	if !ok {
 		return fmt.Errorf("%w %q", ErrNoKey, name)
@@ -266,7 +276,10 @@ func (f *File) Disable(key []byte, name string) error {
 
 // Unset drops one entry, commented out or not.
 func (f *File) Unset(key []byte, name string) error {
-	tok := token(key, name)
+	tok, err := token(key, name)
+	if err != nil {
+		return err
+	}
 	_, active := f.Secret[tok]
 	_, off := f.Disabled[tok]
 	if !active && !off {
