@@ -1,5 +1,9 @@
 version = 1
-salt = "tgwMydTpUAnCKczhdzw4pA"
-check = "QDjCYAokRhXPs8Y48zEVTYNbp95V2uR7VXCik2Ar0F_iZV8CqrU54m3C3F5W6J4MIxpqtjMq4HU"
+salt = "87eWEsKnq935dSSg37Ql6w"
+check = "NmdpHZB9wuKqmMYxqbSxZGkJQvro6-K--QPWn64_o80ySn53WRrDgJ6uRnCHhvjCP6kXnpebPUM"
 
 [secret]
+  l0ZzYsmYYmImyepc = "4QzRz85OiiFzqhL8xrGCxwqi9e3uFtgEFY0SlG1117S7qDxatdN_SJkjecolGVghJJr3J7Ma"
+
+[disabled]
+  q1nodtYE6KHFoFWl = "dQCOB052-90IWxXHVcC8a84b6YRrVCZauyI2UB3mH3m50nmCgeI9dUO1p-1hvkzDGHDkR7AzjYpD"
