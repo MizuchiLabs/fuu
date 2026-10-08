@@ -153,7 +153,10 @@ func login(ctx context.Context, dk vault.DeviceKey, name, pass string) error {
 	old, err := unsealAccount(dk, name)
 	switch {
 	case err == nil && bytes.Equal(old, account):
-		fmt.Println("already logged in")
+		fmt.Printf(
+			"already logged in to %s with that passphrase, a vault that still does not open is sealed under another one\n",
+			name,
+		)
 		return nil
 	case err == nil:
 		// Any valid passphrase gets this far, one of another account included,

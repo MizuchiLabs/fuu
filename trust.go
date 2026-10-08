@@ -147,10 +147,7 @@ func openAny(f *vault.File, dk vault.DeviceKey) (string, []byte, string, error) 
 			return name, key, id, nil
 		}
 	}
-	return "", nil, "", fmt.Errorf(
-		"%w, if it was shared with you run fuu login --account <name> with its passphrase",
-		vault.ErrWrongAccount,
-	)
+	return "", nil, "", wrongAccount(vault.DefaultAccount)
 }
 
 // Lives outside the vault on purpose: a trust anchor read from the file it

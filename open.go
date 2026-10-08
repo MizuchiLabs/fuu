@@ -115,10 +115,7 @@ func unsealPinned(f *vault.File, dk vault.DeviceKey, p pin) ([]byte, []byte, err
 	}
 	key, id, err := f.Open(account)
 	if errors.Is(err, vault.ErrWrongAccount) {
-		return nil, nil, fmt.Errorf(
-			"%w, if the passphrase was rotated elsewhere run fuu login%s with the new one",
-			err, accountArg(p.Account),
-		)
+		return nil, nil, wrongAccount(p.Account)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -127,6 +124,18 @@ func unsealPinned(f *vault.File, dk vault.DeviceKey, p pin) ([]byte, []byte, err
 		return nil, nil, errKeyChanged
 	}
 	return key, account, nil
+}
+
+// wrongAccount lists every way out of a vault this machine cannot open, the
+// last one being that there is none. name is the account a rotation would be of.
+func wrongAccount(name string) error {
+	return fmt.Errorf(
+		"%w\nit opens under the passphrase it was made with and nothing else:\n\n"+
+			"    passphrase rotated elsewhere   fuu login%s with the new one\n"+
+			"    vault of another account       fuu login --account <name> with its passphrase, then fuu trust\n"+
+			"    no passphrase for it           it cannot be opened, delete it and run fuu init",
+		vault.ErrWrongAccount, accountArg(name),
+	)
 }
 
 func openPinnedAccount(path string, dk vault.DeviceKey) (*vault.File, []byte, []byte, error) {

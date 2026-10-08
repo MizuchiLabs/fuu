@@ -162,6 +162,40 @@ func TestOpenPinned(t *testing.T) {
 	}
 }
 
+// A vault made under a passphrase this machine never saw lands in a trusted
+// folder. The refusal names the login that would open it and the init that
+// replaces it, so it is clear when there is no way back.
+func TestWrongAccountSaysEveryWayOut(t *testing.T) {
+	isolatePins(t)
+	path := filepath.Join(t.TempDir(), ".fuu.toml")
+	_, dk, id := writeVault(t, path)
+	pinFolder(t, path, id)
+
+	foreign, _, _, err := vault.New(newTestAccount(t))
+	if err != nil {
+		t.Fatalf("vault.New: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove the old vault: %v", err)
+	}
+	if err := foreign.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	_, _, pinned := openPinned(path, dk)
+	for name, err := range map[string]error{"openPinned": pinned, "trust": trust(t.Context(), path, dk)} {
+		if !errors.Is(err, vault.ErrWrongAccount) {
+			t.Fatalf("%s of a vault under another passphrase = %v, want ErrWrongAccount", name, err)
+		}
+		got := present(err)
+		for _, want := range []string{"fuu login with the new one", "fuu login --account <name>", "fuu init"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s said %q, want it to carry %q", name, got, want)
+			}
+		}
+	}
+}
+
 // First use: init offers the account, prints its passphrase once, and the next vault asks nothing.
 func TestInitStartsAccount(t *testing.T) {
 	isolatePins(t)
