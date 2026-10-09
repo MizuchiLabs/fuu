@@ -8,7 +8,7 @@ require (
 	github.com/mizuchilabs/kata v0.1.15
 	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.57.0
-	golang.org/x/term v0.46.0
+	golang.org/x/term v0.47.0
 )
 
-require golang.org/x/sys v0.48.0 // indirect
+require golang.org/x/sys v0.49.0 // indirect
