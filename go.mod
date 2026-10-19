@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/google/go-tpm v0.9.8
-	github.com/mizuchilabs/kata v0.1.15
+	github.com/mizuchilabs/kata v0.2.0
 	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/term v0.47.0
