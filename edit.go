@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/urfave/cli/v3"
@@ -213,17 +214,47 @@ func editor() string {
 }
 
 // Same name guard as the emitters, this output is still headed for eval.
+// TOML is UTF-8 only, so a buffer holding a binary value is read as Latin-1
+// and every byte comes back as it was.
 func parseValues(raw []byte) (map[string]string, error) {
+	latin1 := !utf8.Valid(raw)
+	if latin1 {
+		raw = fromLatin1(raw)
+	}
 	values := map[string]string{}
 	if err := toml.Unmarshal(raw, &values); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
 	}
-	for name := range values {
+	for name, value := range values {
 		if !vault.ValidName(name) {
 			return nil, fmt.Errorf("%w %q", vault.ErrBadName, name)
 		}
+		if latin1 {
+			values[name] = toLatin1(value)
+		}
 	}
 	return values, nil
+}
+
+func fromLatin1(raw []byte) []byte {
+	out := make([]byte, 0, 2*len(raw))
+	for _, b := range raw {
+		out = utf8.AppendRune(out, rune(b))
+	}
+	return out
+}
+
+// A rune past 0xff can only come from a typed escape, it stays UTF-8.
+func toLatin1(s string) string {
+	out := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r > 0xff {
+			out = utf8.AppendRune(out, r)
+			continue
+		}
+		out = append(out, byte(r)) //nolint:gosec // G115, r is at most 0xff here
+	}
+	return string(out)
 }
 
 // Only names the vault already holds count as commented out, every other comment is prose.
