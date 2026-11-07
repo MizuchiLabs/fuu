@@ -20,6 +20,9 @@ import (
 	"github.com/mizuchilabs/fuu/internal/vault"
 )
 
+// The second read of a Latin-1 buffer moves bytes past 0x7f into the private use area.
+const latin1Shift = 0xf700
+
 // The buffer is TOML, so values with quotes or newlines survive the round trip.
 func cmdEdit(ctx context.Context, cmd *cli.Command) error {
 	path, err := vaultPath(cmd)
@@ -218,41 +221,54 @@ func editor() string {
 // and every byte comes back as it was.
 func parseValues(raw []byte) (map[string]string, error) {
 	latin1 := !utf8.Valid(raw)
+	text := raw
 	if latin1 {
-		raw = fromLatin1(raw)
+		text = fromLatin1(raw, 0)
 	}
 	values := map[string]string{}
-	if err := toml.Unmarshal(raw, &values); err != nil {
+	if err := toml.Unmarshal(text, &values); err != nil {
 		return nil, fmt.Errorf("edit: %w", err)
+	}
+	// A rune that moves with the shift came from a raw byte, one that stays came from an escape.
+	shifted := map[string]string{}
+	if latin1 {
+		if err := toml.Unmarshal(fromLatin1(raw, latin1Shift), &shifted); err != nil {
+			return nil, fmt.Errorf("edit: %w", err)
+		}
 	}
 	for name, value := range values {
 		if !vault.ValidName(name) {
 			return nil, fmt.Errorf("%w %q", vault.ErrBadName, name)
 		}
 		if latin1 {
-			values[name] = toLatin1(value)
+			values[name] = toLatin1(value, shifted[name])
 		}
 	}
 	return values, nil
 }
 
-func fromLatin1(raw []byte) []byte {
+func fromLatin1(raw []byte, shift rune) []byte {
 	out := make([]byte, 0, 2*len(raw))
 	for _, b := range raw {
-		out = utf8.AppendRune(out, rune(b))
+		r := rune(b)
+		if r > 0x7f {
+			r += shift
+		}
+		out = utf8.AppendRune(out, r)
 	}
 	return out
 }
 
-// A rune past 0xff can only come from a typed escape, it stays UTF-8.
-func toLatin1(s string) string {
+func toLatin1(s, shifted string) string {
 	out := make([]byte, 0, len(s))
 	for _, r := range s {
-		if r > 0xff {
-			out = utf8.AppendRune(out, r)
+		u, n := utf8.DecodeRuneInString(shifted)
+		shifted = shifted[n:]
+		if u == r+latin1Shift {
+			out = append(out, byte(r)) //nolint:gosec // G115, only a raw byte shifts and it is at most 0xff
 			continue
 		}
-		out = append(out, byte(r)) //nolint:gosec // G115, r is at most 0xff here
+		out = utf8.AppendRune(out, r)
 	}
 	return string(out)
 }
