@@ -257,5 +257,6 @@ back.
 
 ## Reporting
 
-Open a private security advisory on GitHub, or a regular issue for anything
-you consider low stakes.
+Use "Report a vulnerability" under the
+[Security and quality tab](https://github.com/MizuchiLabs/fuu/security), or
+open a regular issue for anything you consider low stakes.
